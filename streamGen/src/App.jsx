@@ -236,7 +236,7 @@ export default function App() {
   const [overlapDur,  setOverlapDur]  = useState(0);
   const [mlRadius,    setMlRadius]    = useState(3.0);
   const [labelMode,   setLabelMode]   = useState("multiclass");
-  const [distType,    setDistType]    = useState("Gaussiano");
+  const [distType,    setDistType]    = useState("Gaussian");
   const [startTime,   setStartTime]   = useState(1);
   const [endTime,     setEndTime]     = useState(100);
   const [filename,    setFilename]    = useState("stream");
@@ -245,7 +245,7 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const [tick,        setTick]        = useState(null);
   const [precomp,     setPrecomp]     = useState(null);
-  const [status,      setStatus]      = useState({msg:"Pronto.",color:"#6b7280"});
+  const [status,      setStatus]      = useState({msg:"Ready.",color:"#6b7280"});
   const [showHelp,    setShowHelp]    = useState(false);
   const [darkMode,    setDarkMode]    = useState(true);
 
@@ -461,7 +461,7 @@ export default function App() {
         const fcs=[...(traj.featureCentroids||[]), {x:pt.x,y:pt.y}];
         traj.featureCentroids=fcs;
         updated[ti]=traj;
-        setStatus({msg:`f${fcs.length+2} adicionada ao C${ti} em (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)})`, color:featureColor(fcs.length-1)});
+        setStatus({msg:`f${fcs.length+2} added to C${ti} in (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)})`, color:featureColor(fcs.length-1)});
         return updated;
       });
       return;
@@ -493,7 +493,6 @@ export default function App() {
     setCurrentPath(p=>[...p,c2w(canvas,ex,ey)]);
   },[drawing,inputMode,c2w]);
 
-  // FIX Bug 3: lê o path via ref para evitar que o updater aninhado seja chamado duas vezes pelo React StrictMode
   const handleUp = useCallback(()=>{
     if(!drawingRef.current || inputMode!=='free') return;
     setDrawing(false);
@@ -501,7 +500,7 @@ export default function App() {
     setCurrentPath([]);
     if(p.length > 3){
       setCurrentSegments(s => [
-        ...s.filter(seg => seg.type !== 'free' || seg.path.length > 3),
+        ...s,
         {type:'free', path:p, tStart:startTime, tEnd:endTime, connected:false}
       ]);
     }
@@ -534,7 +533,7 @@ export default function App() {
     const color=currentColor||randomColor(trajRef.current.length);
     setTrajectories(p=>[...p,{id:Date.now(),segments:copies,startTime,endTime,color,featureCentroids:[]}]);
     setCurrentSegments([]);setCurrentPath([]);setCurrentColor(null);
-    setStatus({msg:`Cluster ${trajRef.current.length+1} finalizado!`,color:"#22c55e"});
+    setStatus({msg:`Cluster ${trajRef.current.length+1} finished!`,color:"#22c55e"});
   },[currentSegments,currentPath,startTime,endTime,overlapDur,currentColor]);
 
   const removeFeatureCentroid = useCallback((trajIdx, fcIdx)=>{
@@ -548,11 +547,11 @@ export default function App() {
   },[]);
 
   const undo = useCallback(()=>{
-    if(featurePickMode){setFeaturePickMode(false);setFeaturePickTarget(-1);setStatus({msg:"Modo feature cancelado.",color:"#94a3b8"});return;}
+    if(featurePickMode){setFeaturePickMode(false);setFeaturePickTarget(-1);setStatus({msg:"Feature mode canceled.",color:"#94a3b8"});return;}
     if(currentPath.length>0){setCurrentPath([]);return;}
-    if(currentSegments.length>0){setCurrentSegments(p=>p.slice(0,-1));setStatus({msg:"Removido.",color:"#94a3b8"});}
-    else if(trajRef.current.length>0){setTrajectories(p=>p.slice(0,-1));setStatus({msg:"Cluster removido.",color:"#94a3b8"});}
-    else setStatus({msg:"Nada para desfazer.",color:"#f97316"});
+    if(currentSegments.length>0){setCurrentSegments(p=>p.slice(0,-1));setStatus({msg:"Removed.",color:"#94a3b8"});}
+    else if(trajRef.current.length>0){setTrajectories(p=>p.slice(0,-1));setStatus({msg:"Cluster removed.",color:"#94a3b8"});}
+    else setStatus({msg:"Nothing to undo.",color:"#f97316"});
   },[currentPath,currentSegments,featurePickMode]);
 
   const clearAll = useCallback(()=>{
@@ -591,7 +590,7 @@ export default function App() {
     const counts = trajRef.current.map(t=>(t.featureCentroids||[]).length);
     if(counts.length>1){
       const mx=Math.max(...counts), mn=Math.min(...counts);
-      if(mx!==mn){ setStatus({msg:`Features inconsistentes: clusters têm entre ${mn} e ${mx} features. Iguale antes de gerar.`,color:"#ef4444"}); return; }
+      if(mx!==mn){ setStatus({msg:`Inconsistent features: clusters have between ${mn} and ${mx} features. Match before generating...`,color:"#ef4444"}); return; }
     }
     const effFeatures = counts.length ? Math.max(...counts,0) : 0;
     let allT=[...trajRef.current];
@@ -614,13 +613,13 @@ export default function App() {
       setTrajectories(allT);setCurrentSegments([]);setCurrentPath([]);setCurrentColor(null);
     }
 
-    if(!allT.length){setStatus({msg:"Nenhum cluster!",color:"#ef4444"});return;}
-    setStatus({msg:"Computando...",color:"#94a3b8"});
+    if(!allT.length){setStatus({msg:"No cluster!",color:"#ef4444"});return;}
+    setStatus({msg:"Computing...",color:"#94a3b8"});
     const darkCanvas=themeRef.current.canvasBg==="#080c14";
     const res=precomputeData(allT,{std,pts,distType,labelMode,mlRadius,numExtraFeatures:effFeatures,darkCanvas});
-    if(!res){setStatus({msg:"Erro.",color:"#ef4444"});return;}
+    if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
     setPrecomp(res);setIsAnimating(true);tickRef.current=res.gStart;setTick(res.gStart);
-    setStatus({msg:"Animando...",color:"#3b82f6"});
+    setStatus({msg:"Animating...",color:"#3b82f6"});
   },[currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures]);
 
   const precompRef=useRef(null),speedRef=useRef(50);
@@ -633,7 +632,7 @@ export default function App() {
     tickRef.current=gStart;
     const step=()=>{
       const t=tickRef.current;
-      if(t>gEnd){setIsAnimating(false);setStatus({msg:"Concluído!",color:"#22c55e"});return;}
+      if(t>gEnd){setIsAnimating(false);setStatus({msg:"Done!",color:"#22c55e"});return;}
       setTick(t);
       const d=dataPerTick[t];
       if(d) render(d.points,d.colors,d.centroids,driftTicks,t);
@@ -645,16 +644,16 @@ export default function App() {
   },[isAnimating,precomp]);
 
   const downloadCSV = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Gere o stream primeiro!",color:"#f97316"});return;}
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
     const counts=trajRef.current.map(t=>(t.featureCentroids||[]).length);
     if(counts.length>1&&Math.max(...counts)!==Math.min(...counts)){
-      setStatus({msg:"Features inconsistentes entre clusters. Iguale antes de baixar.",color:"#ef4444"});return;
+      setStatus({msg:"Inconsistent features between clusters. Match them before downloading.",color:"#ef4444"});return;
     }
     const effFeatures=counts.length?Math.max(...counts,0):0;
     const csv=makeCSV(precomp.pointClass,trajRef.current,precomp.driftTicks,effFeatures,datasetMode);
     const blob=new Blob([csv],{type:"text/csv"}),url=URL.createObjectURL(blob),a=document.createElement("a");
     a.href=url;a.download=filename.endsWith(".csv")?filename:filename+".csv";a.click();URL.revokeObjectURL(url);
-    setStatus({msg:`"${a.download}" baixado!`,color:"#22c55e"});
+    setStatus({msg:`"${a.download}" Downloaded!`,color:"#22c55e"});
   },[precomp,filename,numExtraFeatures,datasetMode]);
 
   const downloadImage = useCallback(()=>{
@@ -662,7 +661,7 @@ export default function App() {
     const a=document.createElement("a");
     a.href=canvas.toDataURL("image/png");
     a.download=(filename.endsWith(".csv")?filename.replace(".csv",""):filename)+".png";
-    a.click(); setStatus({msg:"Imagem salva!",color:"#22c55e"});
+    a.click(); setStatus({msg:"Saved image!",color:"#22c55e"});
   },[filename]);
 
   useEffect(()=>{
@@ -752,18 +751,18 @@ export default function App() {
           <div style={{fontSize:9,color:theme.label,fontFamily:"monospace",marginTop:2,letterSpacing:"0.08em"}}>STREAM GENERATOR</div>
         </div>
 
-        <RadioUI label="Distribuição" opts={["Gaussiano","RandomRBF"]} val={distType} set={setDistType}/>
+        <RadioUI label="Distribution" opts={["Gaussian","RandomRBF"]} val={distType} set={setDistType}/>
 
         {/* ── Parâmetros numéricos — inputs em vez de sliders impráticos ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:2}}>
           <SliderInput l="Standard Deviation" min={0} max={0.5} step={0.005} v={std} set={setStd} decimals={3}/>
-          <NumInput l="Instâncias por Centroide" v={pts} set={setPts} min={1} max={5000} integer/>
-          <NumInput l="Velocidade (ms/tick)" v={speed} set={setSpeed} min={10} max={2000} integer u="ms"/>
+          <NumInput l="Instances per Centroid" v={pts} set={setPts} min={1} max={5000} integer/>
+          <NumInput l="Speed (ms/tick)" v={speed} set={setSpeed} min={10} max={2000} integer u="ms"/>
         </div>
 
-        {/* ── Modo de rótulo ── */}
+        {/* ── Type ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Modo de Rótulo</div>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Type</div>
           <div style={{display:"flex",gap:3,background:theme.bg,borderRadius:8,padding:3,border:`1px solid ${theme.border}`}}>
             {[["multiclass","Multiclass"],["multilabel","Multi-Label"]].map(([mode,label])=>(
               <button key={mode} onClick={()=>setLabelMode(mode)} style={{
@@ -788,7 +787,7 @@ export default function App() {
           )}
           {labelMode==='multiclass'&&(
             <div style={{marginTop:8,fontSize:9,color:theme.textFaint,lineHeight:1.5}}>
-              Cada ponto pertence a exatamente um cluster. <code style={{color:theme.textMuted}}>class_i=1</code> em apenas uma coluna.
+              Each point belongs to exactly one cluster <code style={{color:theme.textMuted}}>class_i=1</code> in only one column.
             </div>
           )}
         </div>
@@ -796,16 +795,16 @@ export default function App() {
         {/* ── Features Extras por Cluster ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
           <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
-            Features Extras
-            {maxFeaturesUsed>0&&<span style={{marginLeft:6,color:featuresConsistent?"#f5a623":"#f87171"}}>{featuresConsistent?`${maxFeaturesUsed} por cluster`:"inconsistente ⚠"}</span>}
+            Extra Features
+            {maxFeaturesUsed>0&&<span style={{marginLeft:6,color:featuresConsistent?"#f5a623":"#f87171"}}>{featuresConsistent?`${maxFeaturesUsed} per cluster`:"inconsistent!"}</span>}
           </div>
 
           <div style={{fontSize:9,color:theme.textFaint,lineHeight:1.5,marginBottom:10}}>
-            Selecione um cluster e ative o modo para clicar no canvas e posicionar centroides independentes de features extras. Cada cluster tem seus próprios centroides fixos no tempo.
+            Select a cluster and enable the mode to click on the canvas and position independent centroids of extra features.
           </div>
 
           {trajectories.length===0 ? (
-            <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>Crie ao menos um cluster primeiro.</div>
+            <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>Create at least one cluster first.</div>
           ) : (
             <>
               {/* Seletor de cluster alvo */}
@@ -835,8 +834,8 @@ export default function App() {
                     color:featurePickMode?featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length):theme.textDim,
                   }}>
                     {featurePickMode
-                      ?`◉ Clique no canvas → f${(trajectories[featurePickTarget]?.featureCentroids||[]).length+3} para C${featurePickTarget}`
-                      :`+ Adicionar feature ao C${featurePickTarget}`}
+                      ?`◉ Click on the canvas → f${(trajectories[featurePickTarget]?.featureCentroids||[]).length+3} for C${featurePickTarget}`
+                      :`+ Add feature to C${featurePickTarget}`}
                   </button>
 
                   {/* Lista de features do cluster selecionado */}
@@ -861,7 +860,7 @@ export default function App() {
                     </div>
                   )}
                   {(trajectories[featurePickTarget]?.featureCentroids||[]).length===0&&(
-                    <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>Nenhuma feature adicionada a C{featurePickTarget} ainda.</div>
+                    <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>No features added to C{featurePickTarget} yet.</div>
                   )}
                 </>
               )}
@@ -915,7 +914,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Janela temporal ── */}
+        {/* ── Time Window ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
           <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Janela Temporal</div>
           <div style={{display:"flex",gap:8}}>
@@ -929,14 +928,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── Saída / Dataset ── */}
+        {/* ── Output / Dataset ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:14}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Saída do Dataset</div>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Dataset Output Type</div>
           <div style={{display:"flex",flexDirection:"column",gap:3,marginBottom:10}}>
             {[
-              ["complete","Completo","Com drift_occurred"],
-              ["test",   "Teste",   "Com drift_occurred"],
-              ["train",  "Treino",  "Sem drift_occurred"],
+              ["complete","Complete","with drift_occurred"],
+              ["test",   "Test",   "with drift_occurred"],
+              ["train",  "Train",  "without drift_occurred"],
             ].map(([mode,label,tip])=>(
               <button key={mode} onClick={()=>setDatasetMode(mode)} style={{
                 padding:"5px 10px",borderRadius:5,border:"1px solid",textAlign:"left",
@@ -951,7 +950,7 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Arquivo</div>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Filename</div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <input value={filename} onChange={e=>setFilename(e.target.value)}
               style={{flex:1,background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,color:theme.textMuted,borderRadius:6,padding:"4px 7px",fontSize:11,fontFamily:"monospace"}}/>
@@ -1105,16 +1104,16 @@ export default function App() {
             onClick={e=>e.stopPropagation()}>
             <div style={{fontSize:14,fontWeight:800,marginBottom:20,color:theme.text}}>Como usar</div>
             {[
-              ["✏  Draw","Arraste para desenhar o caminho contínuo do centroide ao longo do tempo."],
-              ["◉  Points","Clique para posicionar centroides discretos no espaço de features."],
-              ["⟷  Connected","Pontos interpolam linearmente — drift Incremental, sem overlap."],
-              ["·  Disconnected","Centroide salta abruptamente — drift Abrupt."],
-              ["〰  Overlap","Com 2+ segmentos livres e overlap > 0 — drift Gradual."],
-              ["●  Multi-Label","Pontos dentro do raio (N×σ) de outro cluster recebem múltiplos rótulos."],
-              ["◆  Features Extras","Na sidebar, selecione um cluster como alvo e ative '+ Adicionar feature'. Clique no canvas para posicionar o centroide de f3, f4… para aquele cluster. Cada cluster tem centroides independentes e você pode remover features individualmente com ✕."],
-              ["Saída","Completo/Teste: CSV com drift_occurred. Treino: sem drift_occurred."],
-              ["▶  Generate","Anima e computa o dataset."],
-              ["⬇  CSV / PNG","Baixa o dataset ou a imagem do canvas."],
+              ["✏ Draw","Drag to draw the continuous path of the centroid over time."],
+              ["◉ Points","Click to position discrete centroids in feature space."],
+              ["⟷ Connected","Points interpolate linearly — Incremental drift, no overlap."],
+              ["· Disconnected","Centroid jumps abruptly — Abrupt drift."],
+              ["〰 Overlap","With 2+ free segments and overlap > 0 — Gradual drift."],
+              ["● Multi-Label","Points within the radius (N×σ) of another cluster receive multiple labels."],
+              ["◆ Features Extras","In the sidebar, select a cluster as a target and activate '+ Add feature'. Click on the canvas to position the centroid of f3, f4… for that cluster. Each cluster has independent centroids and you can remove features individually with ✕."],
+              ["Output","Complete/Test: CSV with drift_occurred. Training: without drift_occurred."],
+              ["▶ Generate","Animates and computes the dataset."],
+              ["⬇ CSV / PNG","Downloads the dataset or canvas image."],
             ].map(([t,d])=>(
               <div key={t} style={{marginBottom:9}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:2,fontFamily:"monospace"}}>{t}</div>
