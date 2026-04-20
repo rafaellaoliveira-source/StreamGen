@@ -343,7 +343,7 @@ export default function App() {
         const fc_color=featureColor(nDone);
         ctx.fillStyle=fc_color; ctx.globalAlpha=1;
         ctx.font="bold 12px monospace";
-        const msg=`Clique para posicionar f${nDone+3} do C${fpTarget}`;
+        const msg=`Click to position f${nDone+3} from C${fpTarget}`;
         ctx.fillText(msg,W/2-ctx.measureText(msg).width/2,30);
       }
     }
@@ -808,7 +808,7 @@ export default function App() {
           ) : (
             <>
               {/* Seletor de cluster alvo */}
-              <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Cluster alvo</div>
+              <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Cluster</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
                 {trajectories.map((t,i)=>(
                   <button key={t.id} onClick={()=>{
@@ -916,7 +916,7 @@ export default function App() {
 
         {/* ── Time Window ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Janela Temporal</div>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Temporal Window</div>
           <div style={{display:"flex",gap:8}}>
             {[["Start",startTime,setStartTime],["End",endTime,setEndTime]].map(([lbl,val,set])=>(
               <div key={lbl} style={{flex:1}}>
@@ -934,8 +934,8 @@ export default function App() {
           <div style={{display:"flex",flexDirection:"column",gap:3,marginBottom:10}}>
             {[
               ["complete","Complete","with drift_occurred"],
-              ["test",   "Test",   "with drift_occurred"],
-              ["train",  "Train",  "without drift_occurred"],
+              ["train",   "Train",   "with drift_occurred"],
+              ["test",  "Test",  "without drift_occurred"],
             ].map(([mode,label,tip])=>(
               <button key={mode} onClick={()=>setDatasetMode(mode)} style={{
                 padding:"5px 10px",borderRadius:5,border:"1px solid",textAlign:"left",
