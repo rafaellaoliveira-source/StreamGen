@@ -1072,8 +1072,8 @@ export default function App() {
           <div style={{display:"flex",flexDirection:"column",gap:3,marginBottom:10}}>
             {[
               ["complete","Complete","with drift_occurred"],
-              ["train",   "Train",   "with drift_occurred"],
-              ["test",  "Test",  "without drift_occurred"],
+              ["test",   "Test",   "with drift_occurred"],
+              ["train",  "Train",  "without drift_occurred"],
             ].map(([mode,label,tip])=>(
               <button key={mode} onClick={()=>setDatasetMode(mode)} style={{
                 padding:"5px 10px",borderRadius:5,border:"1px solid",textAlign:"left",
