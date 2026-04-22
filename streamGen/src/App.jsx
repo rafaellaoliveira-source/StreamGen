@@ -51,10 +51,10 @@ function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtr
           driftTicks.add(curr.tStart);
         }
       }
-      for (const seg of traj.segments) {
-        if (seg.type === 'free' && seg.path.length > 1) {
-          for (let t = seg.tStart; t <= seg.tEnd; t++) driftTicks.add(t);
-        }
+      if (traj.segments.length === 1 && traj.segments[0].type === 'free' 
+          && traj.segments[0].path.length > 1) {
+        const seg = traj.segments[0];
+        for (let t = seg.tStart; t <= seg.tEnd; t++) driftTicks.add(t);
       }
       for (let i = 0; i < traj.segments.length - 1; i++) {
         const segA = traj.segments[i];
