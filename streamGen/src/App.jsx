@@ -202,97 +202,132 @@ function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtr
 
   return {gStart, gEnd, dataPerTick, pointClass, driftTicks};
 }
+// ─── Helpers de shuffle e split ───────────────────────────────────────────────
+function shuffleByTick(pointClass) {
+  const byTick = {};
+  Object.entries(pointClass).forEach(([id, pt]) => {
+    if(!byTick[pt.t]) byTick[pt.t] = [];
+    byTick[pt.t].push([id, pt]);
+  });
+  return Object.keys(byTick)
+    .map(Number).sort((a,b) => a-b)
+    .flatMap(t => {
+      const group = byTick[t];
+      for(let i = group.length-1; i > 0; i--){
+        const j = Math.floor(Math.random() * (i+1));
+        [group[i], group[j]] = [group[j], group[i]];
+      }
+      return group;
+    });
+}
+
+function splitEntries(entries, trainPct) {
+  const n = Math.floor(entries.length * trainPct / 100);
+  return { train: entries.slice(0, n), test: entries.slice(n) };
+}
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────
-function makeCSV(pointClass, trajs, driftTicks, numExtraFeatures, datasetMode) {
-  const includeDrift = datasetMode !== "train";
+function makeCSV(pointClass, trajs, numExtraFeatures, trainPct) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
-
   const header = [
     "global_id","timestamp","f1","f2",
     ...extraCols,
-    ...(includeDrift?["drift_occurred"]:[]),
     ...trajs.map((_,i)=>`class_${i}`)
   ].join(",");
 
-  const byTick = {};
-  Object.entries(pointClass).forEach(([id, pt]) => {
-    if(!byTick[pt.t]) byTick[pt.t] = [];
-    byTick[pt.t].push([id, pt]);
-  });
-  const shuffled = Object.keys(byTick)
-    .map(Number).sort((a,b) => a-b)
-    .flatMap(t => {
-      const group = byTick[t];
-      for(let i = group.length-1; i > 0; i--){
-        const j = Math.floor(Math.random() * (i+1));
-        [group[i], group[j]] = [group[j], group[i]];
-      }
-      return group;
-    });
-
-  const rows = shuffled.map(([id,{x,y,extras,t,labels}]) => {
+  const toRow = ([id,{x,y,extras,t,labels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    return [
-      id, t,
-      x.toFixed(6), y.toFixed(6),
-      ...ev,
-      ...(includeDrift ? [driftTicks.has(t)?1:0] : []),
-      ...labels
-    ].join(",");
-  });
+    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
+  };
 
-  return [header,...rows].join("\n");
+  const shuffled = shuffleByTick(pointClass);
+  const {train, test} = splitEntries(shuffled, trainPct);
+
+  return {
+    train: [header, ...train.map(toRow)].join("\n"),
+    test:  [header, ...test.map(toRow)].join("\n"),
+  };
 }
 
 // ─── ARFF ─────────────────────────────────────────────────────────────────────
-function makeARFF(pointClass, trajs, driftTicks, numExtraFeatures, datasetMode) {
-  const includeDrift = datasetMode !== "train";
+function makeARFF(pointClass, trajs, numExtraFeatures, trainPct) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
 
-  const lines = [];
-  lines.push("@relation stream_gen");
-  lines.push("");
-  lines.push("@attribute global_id NUMERIC");
-  lines.push("@attribute timestamp NUMERIC");
-  lines.push("@attribute f1 NUMERIC");
-  lines.push("@attribute f2 NUMERIC");
-  extraCols.forEach(col => lines.push(`@attribute ${col} NUMERIC`));
-  if (includeDrift) lines.push("@attribute drift_occurred {0,1}");
-  trajs.forEach((_, i) => lines.push(`@attribute class_${i} {0,1}`));
-  lines.push("");
-  lines.push("@data");
+  const makeHeader = () => {
+    const lines = [];
+    lines.push("@relation stream_gen");
+    lines.push("");
+    lines.push("@attribute global_id NUMERIC");
+    lines.push("@attribute timestamp NUMERIC");
+    lines.push("@attribute f1 NUMERIC");
+    lines.push("@attribute f2 NUMERIC");
+    extraCols.forEach(col => lines.push(`@attribute ${col} NUMERIC`));
+    trajs.forEach((_, i) => lines.push(`@attribute class_${i} {0,1}`));
+    lines.push("");
+    lines.push("@data");
+    return lines;
+  };
 
-  const byTick = {};
-  Object.entries(pointClass).forEach(([id, pt]) => {
-    if(!byTick[pt.t]) byTick[pt.t] = [];
-    byTick[pt.t].push([id, pt]);
-  });
-  const shuffled = Object.keys(byTick)
-    .map(Number).sort((a,b) => a-b)
-    .flatMap(t => {
-      const group = byTick[t];
-      for(let i = group.length-1; i > 0; i--){
-        const j = Math.floor(Math.random() * (i+1));
-        [group[i], group[j]] = [group[j], group[i]];
-      }
-      return group;
-    });
-
-  shuffled.forEach(([id,{x,y,extras,t,labels}]) => {
+  const toRow = ([id,{x,y,extras,t,labels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    lines.push([
-      id, t,
-      x.toFixed(6), y.toFixed(6),
-      ...ev,
-      ...(includeDrift ? [driftTicks.has(t)?1:0] : []),
-      ...labels
-    ].join(","));
+    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
+  };
+
+  const shuffled = shuffleByTick(pointClass);
+  const {train, test} = splitEntries(shuffled, trainPct);
+
+  return {
+    train: [...makeHeader(), ...train.map(toRow)].join("\n"),
+    test:  [...makeHeader(), ...test.map(toRow)].join("\n"),
+  };
+}
+
+// ─── Metadados TXT ────────────────────────────────────────────────────────────
+function makeMetaTXT(trajs, driftTicks, numExtraFeatures, trainPct) {
+  const lines = [];
+  lines.push("=== StreamGen Dataset Metadata ===");
+  lines.push("");
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push(`Label mode: ${trajs.length > 0 ? "see class columns" : "unknown"}`);
+  lines.push(`Total clusters: ${trajs.length}`);
+  lines.push(`Extra features: ${numExtraFeatures} (f3…f${numExtraFeatures+2})`);
+  lines.push(`Train split: ${trainPct}%`);
+  lines.push(`Test split: ${100-trainPct}%`);
+  lines.push("");
+
+  trajs.forEach((traj, i) => {
+    lines.push(`--- Cluster ${i} ---`);
+    lines.push(`Color: ${traj.color}`);
+    lines.push(`Duration: ${traj.startTime} - ${traj.endTime}`);
+    lines.push(`Segments: ${traj.segments.length}`);
+
+    traj.segments.forEach((seg, si) => {
+      lines.push(`  Segment ${si+1}: type=${seg.type} | t=${seg.tStart}→${seg.tEnd}`);
+    });
+
+    // Drift info para este cluster
+    const clusterDriftTicks = [];
+    for(const t of driftTicks){
+      if(t >= traj.startTime && t <= traj.endTime)
+        clusterDriftTicks.push(t);
+    }
+    if(clusterDriftTicks.length > 0){
+      const driftStart = Math.min(...clusterDriftTicks);
+      const driftEnd   = Math.max(...clusterDriftTicks);
+      lines.push(`  Drift start: ${driftStart}`);
+      lines.push(`  Drift end:   ${driftEnd}`);
+      lines.push(`  Drift duration: ${driftEnd - driftStart + 1} ticks`);
+    } else {
+      lines.push(`  Drift: none detected`);
+    }
+    lines.push("");
   });
+
+  return lines.join("\n");
 }
 
 // ─── Tema ─────────────────────────────────────────────────────────────────────
@@ -305,7 +340,7 @@ const makeTheme = (dark) => ({
   text:      dark?"#1e293b":"#e2e8f0",
   textMuted: dark?"#64748b":"#94a3b8",
   textDim:   dark?"#94a3b8":"#64748b",
-  textFaint: dark?"#cbd5e1":"#334155",
+  textFaint: dark?"#75787d":"#334155",
   label:     dark?"#94a3b8":"#1e3a5f",
   axisX:     dark?"rgba(59,130,246,0.5)":"rgba(96,165,250,0.35)",
   axisY:     dark?"rgba(239,68,68,0.5)":"rgba(248,113,113,0.35)",
@@ -325,7 +360,6 @@ export default function App() {
   const themeRef      = useRef(makeTheme(true));
 
   const [inputMode,       setInputMode]       = useState("free");
-  const [pointConnected,  setPointConnected]  = useState(false);
   const [drawing,         setDrawing]         = useState(false);
   const [currentPath,     setCurrentPath]     = useState([]);
   const [currentSegments, setCurrentSegments] = useState([]);
@@ -346,7 +380,7 @@ export default function App() {
   const [startTime,   setStartTime]   = useState(1);
   const [endTime,     setEndTime]     = useState(100);
   const [filename,    setFilename]    = useState("stream");
-  const [datasetMode, setDatasetMode] = useState("complete");
+  const [trainPct, setTrainPct] = useState(80);
 
   const [isAnimating, setIsAnimating] = useState(false);
   const [tick,        setTick]        = useState(null);
@@ -363,15 +397,11 @@ export default function App() {
   const currentPathRef      = useRef([]);
   const currentColorRef     = useRef(null);
   const drawingRef          = useRef(false);
-  const pointConnectedRef   = useRef(false);
-  // const numExtraFeaturesRef = useRef(0);
 
   useEffect(()=>{ currentSegmentsRef.current  = currentSegments;  },[currentSegments]);
   useEffect(()=>{ currentPathRef.current      = currentPath;      },[currentPath]);
   useEffect(()=>{ currentColorRef.current     = currentColor;     },[currentColor]);
   useEffect(()=>{ drawingRef.current          = drawing;          },[drawing]);
-  useEffect(()=>{ pointConnectedRef.current   = pointConnected;   },[pointConnected]);
-  // useEffect(()=>{ numExtraFeaturesRef.current = numExtraFeatures; },[numExtraFeatures]);
 
   const c2w = useCallback((canvas,ex,ey)=>{
     const r=canvas.getBoundingClientRect();
@@ -392,7 +422,6 @@ export default function App() {
     const path=currentPathRef.current;
     const col=currentColorRef.current;
     const isDrawing=drawingRef.current;
-    const ptConn=pointConnectedRef.current;
 
     ctx.fillStyle=th.canvasBg; ctx.fillRect(0,0,W,H);
     ctx.strokeStyle=th.grid; ctx.lineWidth=1;
@@ -450,14 +479,6 @@ export default function App() {
           ctx.beginPath();ctx.arc(p.px,p.py,7,0,Math.PI*2);ctx.stroke();
           ctx.fillStyle=th.textMuted; ctx.font="10px monospace";
           ctx.fillText(`t:${seg.tStart}→${seg.tEnd}`,p.px+10,p.py-6);
-          if(si<traj.segments.length-1&&seg.connected){
-            const next=traj.segments[si+1];
-            const p2=w2c(canvas,next.path[0].x,next.path[0].y);
-            ctx.strokeStyle=traj.color; ctx.lineWidth=1.5; ctx.globalAlpha=0.35;
-            ctx.setLineDash([4,4]);
-            ctx.beginPath();ctx.moveTo(p.px,p.py);ctx.lineTo(p2.px,p2.py);ctx.stroke();
-            ctx.setLineDash([]);
-          }
         } else {
           if(seg.path.length<2) continue;
           ctx.strokeStyle=traj.color; ctx.lineWidth=2.5; ctx.globalAlpha=0.8;
@@ -473,7 +494,7 @@ export default function App() {
       }
     }
 
-    // ── Segmentos em construção ────────────────────────────────────────────
+    // ── Segments under construction ────────────────────────────────────────────
     for(let si=0;si<segs.length;si++){
       const seg=segs[si];
       if(seg.type==='point'){
@@ -484,13 +505,6 @@ export default function App() {
         ctx.beginPath();ctx.arc(p.px,p.py,7,0,Math.PI*2);ctx.stroke();
         ctx.fillStyle=th.textMuted; ctx.font="10px monospace";
         ctx.fillText(`t:${seg.tStart}→${seg.tEnd}`,p.px+10,p.py-6);
-        if(ptConn&&si<segs.length-1&&segs[si+1].type==='point'){
-          const p2=w2c(canvas,segs[si+1].path[0].x,segs[si+1].path[0].y);
-          ctx.strokeStyle=col||"#888"; ctx.lineWidth=1.5; ctx.globalAlpha=0.35;
-          ctx.setLineDash([4,4]);
-          ctx.beginPath();ctx.moveTo(p.px,p.py);ctx.lineTo(p2.px,p2.py);ctx.stroke();
-          ctx.setLineDash([]); ctx.globalAlpha=1;
-        }
       } else if(seg.path.length>=2){
         ctx.strokeStyle=col||"#888"; ctx.lineWidth=3; ctx.globalAlpha=0.9;
         ctx.beginPath();
@@ -534,7 +548,7 @@ export default function App() {
     }
   },[w2c]);
 
-  useEffect(()=>{ render(); },[render,theme,trajectories,currentSegments,currentPath,currentColor,drawing,pointConnected]);
+  useEffect(()=>{ render(); },[render,theme,trajectories,currentSegments,currentPath,currentColor,drawing]);
 
   // ─── Mouse / Touch ────────────────────────────────────────────────────────
   const handleDown = useCallback((ex,ey)=>{
@@ -550,7 +564,7 @@ export default function App() {
         const total=endTime-startTime;
         const slotSize=Math.floor(total/n);
         const updated=prev.map((s,i)=>({...s,tStart:startTime+i*slotSize,tEnd:startTime+(i+1)*slotSize-1}));
-        const newSeg={type:'point',path:[pt],connected:pointConnected,tStart:startTime+(n-1)*slotSize,tEnd:endTime};
+        const newSeg={type:'point',path:[pt],connected:false,tStart:startTime+(n-1)*slotSize,tEnd:endTime};
         if(updated.length>0) updated[updated.length-1].tEnd=newSeg.tStart-1;
         return [...updated,newSeg];
       });
@@ -560,7 +574,7 @@ export default function App() {
       setDrawing(true);
       setStatus({msg:"Drawing...",color:"#94a3b8"});
     }
-  },[isAnimating,c2w,currentColor,inputMode,pointConnected,startTime,endTime]);
+  },[isAnimating,c2w,currentColor,inputMode,startTime,endTime]);
 
   const handleMove = useCallback((ex,ey)=>{
     if(!drawing||inputMode!=='free') return;
@@ -606,14 +620,17 @@ export default function App() {
     if(startTime>=endTime){setStatus({msg:"Invalid Start/End!",color:"#ef4444"});return;}
 
     const copies=valid.map(s=>({...s}));
-    for(let i=0;i<copies.length-1;i++){
-      const curr=copies[i],next=copies[i+1];
-      if(curr.type==='point'&&next.type==='point'&&next.connected) continue;
-      if(overlapDur>0){
-        const newTEnd=Math.min(next.tStart+overlapDur-1,next.tEnd-1);
-        copies[i]={...copies[i],tEnd:newTEnd};
-      }
+
+    // Overlap simétrico: ponto de transição = meio da duração total do cluster
+    if(overlapDur>0 && copies.length>=2){
+      const mid = Math.round((startTime + endTime) / 2);
+      const half = Math.round(overlapDur / 2);
+      // Segmento 1: termina em mid + half
+      copies[0] = {...copies[0], tStart: startTime, tEnd: mid + half};
+      // Segmento 2: começa em mid - half
+      copies[1] = {...copies[1], tStart: mid - half, tEnd: endTime};
     }
+
     const color=currentColor||randomColor(trajRef.current.length);
     setTrajectories(p=>[...p,{id:Date.now(),segments:copies,startTime,endTime,color,featureCentroids:[]}]);
     setCurrentSegments([]);setCurrentPath([]);setCurrentColor(null);
@@ -676,14 +693,15 @@ export default function App() {
 
     if(pending.length&&startTime<endTime){
       const copies=pending.map(s=>({...s}));
-      for(let i=0;i<copies.length-1;i++){
-        const curr=copies[i],next=copies[i+1];
-        if(curr.type==='point'&&next.type==='point'&&next.connected) continue;
-        if(overlapDur>0){
-          const newTEnd=Math.min(next.tStart+overlapDur-1,next.tEnd-1);
-          copies[i]={...copies[i],tEnd:newTEnd};
-        }
+
+      // Overlap simétrico
+      if(overlapDur>0 && copies.length>=2){
+        const mid = Math.round((startTime + endTime) / 2);
+        const half = Math.round(overlapDur / 2);
+        copies[0] = {...copies[0], tStart: startTime, tEnd: mid + half};
+        copies[1] = {...copies[1], tStart: mid - half, tEnd: endTime};
       }
+
       const col=currentColor||randomColor(allT.length);
       allT=[...allT,{id:Date.now(),segments:copies,startTime,endTime,color:col,featureCentroids:[]}];
       setTrajectories(allT);setCurrentSegments([]);setCurrentPath([]);setCurrentColor(null);
@@ -720,21 +738,46 @@ export default function App() {
   },[isAnimating,precomp]);
 
   const downloadCSV = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const csv=makeCSV(precomp.pointClass,trajRef.current,precomp.driftTicks,numExtraFeatures,datasetMode);
-    const blob=new Blob([csv],{type:"text/csv"}),url=URL.createObjectURL(blob),a=document.createElement("a");
-    a.href=url;a.download=filename.endsWith(".csv")?filename:filename+".csv";a.click();URL.revokeObjectURL(url);
-    setStatus({msg:`"${a.download}" Downloaded!`,color:"#22c55e"});
-  },[precomp,filename,datasetMode,numExtraFeatures]);
+  if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
+  const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+
+  [["train", train], ["test", test]].forEach(([suffix, content]) => {
+    const blob = new Blob([content], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${base}_${suffix}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  });
+  setStatus({msg:`"${base}_train.csv" and "${base}_test.csv" downloaded!`,color:"#22c55e"});
+},[precomp, filename, numExtraFeatures, trainPct]);
 
   const downloadARFF = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const arff=makeARFF(precomp.pointClass,trajRef.current,precomp.driftTicks,numExtraFeatures,datasetMode);
-    const blob=new Blob([arff],{type:"text/plain"}),url=URL.createObjectURL(blob),a=document.createElement("a");
-    const base=filename.endsWith(".csv")?filename.replace(".csv",""):filename;
-    a.href=url;a.download=base+".arff";a.click();URL.revokeObjectURL(url);
-    setStatus({msg:`"${a.download}" downloaded!`,color:"#22c55e"});
-  },[precomp,filename,datasetMode,numExtraFeatures]);
+    const {train, test} = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
+    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+
+    [["train", train], ["test", test]].forEach(([suffix, content]) => {
+      const blob = new Blob([content], {type:"text/plain"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${base}_${suffix}.arff`; a.click();
+      URL.revokeObjectURL(url);
+    });
+    setStatus({msg:`"${base}_train.arff" and "${base}_test.arff" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, trainPct]);
+
+  const downloadMeta = useCallback(()=>{
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const txt = makeMetaTXT(trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct);
+    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+    const blob = new Blob([txt], {type:"text/plain"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${base}_meta.txt`; a.click();
+    URL.revokeObjectURL(url);
+    setStatus({msg:`"${base}_meta.txt" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, trainPct]);
 
   const downloadImage = useCallback(()=>{
     const canvas=canvasRef.current; if(!canvas) return;
@@ -778,35 +821,38 @@ export default function App() {
           ? "#94a3b8"
           : "#60a5fa";
 
-  const featureCounts    = trajectories.map(t=>(t.featureCentroids||[]).length);
-  const maxFeaturesUsed  = featureCounts.length ? Math.max(...featureCounts) : 0;
-  const minFeaturesUsed  = featureCounts.length ? Math.min(...featureCounts) : 0;
-  
-  const featuresConsistent = trajectories.length === 0 || maxFeaturesUsed === minFeaturesUsed;
-  
-  const effectiveNumFeatures = maxFeaturesUsed;
-
   // ─── Sub-componentes UI ───────────────────────────────────────────────────
 
-  const NumInput = ({l, v, set, min=0, max=99999, integer=false, u=""}) => (
-    <div style={{marginBottom:12}}>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-        <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.07em"}}>{l}</span>
-        {u && <span style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace"}}>{u}</span>}
+  const NumInput = ({l, v, set, min=0, max=99999, integer=false, u=""}) => {
+    const [localVal, setLocalVal] = useState(String(v));
+
+    useEffect(()=>{ setLocalVal(String(v)); }, [v]);
+
+    const commit = (raw) => {
+      const parsed = integer ? parseInt(raw) : parseFloat(raw);
+      if(isNaN(parsed)) { setLocalVal(String(v)); return; }
+      const clamped = Math.max(min, Math.min(max, parsed));
+      set(clamped);
+      setLocalVal(String(clamped));
+    };
+
+    return (
+      <div style={{marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+          <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.07em"}}>{l}</span>
+          {u && <span style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace"}}>{u}</span>}
+        </div>
+        <input
+          type="number" value={localVal} min={min} max={max} step={integer?1:"any"}
+          onChange={e => setLocalVal(e.target.value)}
+          onBlur={e => commit(e.target.value)}
+          onKeyDown={e => { if(e.key === 'Enter') commit(e.target.value); }}
+          style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
+            color:theme.textMuted,borderRadius:6,padding:"5px 8px",fontSize:12,
+            fontFamily:"monospace",boxSizing:"border-box"}}/>
       </div>
-      <input
-        type="number" value={v} min={min} max={max} step={integer?1:"any"}
-        onChange={e=>{
-          const raw=parseFloat(e.target.value);
-          if(isNaN(raw)) return;
-          const val=integer?Math.round(raw):raw;
-          if(val>=min&&val<=max) set(val);
-        }}
-        style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
-          color:theme.textMuted,borderRadius:6,padding:"5px 8px",fontSize:12,
-          fontFamily:"monospace",boxSizing:"border-box"}}/>
-    </div>
-  );
+    );
+  };
 
   const SliderInput = ({l, v, set, min, max, step, decimals=2, u=""}) => (
     <div style={{marginBottom:12}}>
@@ -850,7 +896,7 @@ export default function App() {
 
         <RadioUI label="Distribution" opts={["Gaussian","RandomRBF"]} val={distType} set={setDistType}/>
 
-        {/* ── Parâmetros numéricos — inputs em vez de sliders impráticos ── */}
+        {/* ── Numeric Parameters ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:2}}>
           <SliderInput l="Standard Deviation" min={0} max={0.5} step={0.005} v={std} set={setStd} decimals={3}/>
           <NumInput l="Instances per Centroid" v={pts} set={setPts} min={1} max={5000} integer/>
@@ -916,48 +962,78 @@ export default function App() {
           )}
         </div>
 
-        {/* ── Segmentos em construção ── */}
+        {/* ── Segments under construction ── */}
         {currentSegments.length>0&&(
           <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
             <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
               Segments under construction
             </div>
-            {currentSegments.map((seg,i)=>(
-              <div key={i} style={{background:theme.cardBg,borderRadius:7,padding:"8px 10px",marginBottom:6,border:`1px solid ${theme.cardBorder}`}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-                  <span style={{fontSize:10,color:theme.textMuted,fontFamily:"monospace"}}>
-                    {seg.type==='point'?'◉':'✏'} {seg.type==='point'?`(${seg.path[0].x.toFixed(2)}, ${seg.path[0].y.toFixed(2)})`: `Free Seg ${i+1}`}
-                  </span>
-                  <button onClick={()=>removeSegment(i)} style={{background:"transparent",border:"none",color:theme.textDim,cursor:"pointer",fontSize:12}}>✕</button>
-                </div>
-                <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:2}}>t start</div>
-                    <input type="number" value={seg.tStart} onChange={e=>updateSegTime(i,'tStart',e.target.value)}
-                      style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,color:theme.textMuted,borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+            {currentSegments.map((seg,i)=>{
+              // Calcula os tempos ajustados pelo overlap simétrico para exibição
+              const mid = Math.round((startTime + endTime) / 2);
+              const half = Math.round(overlapDur / 2);
+              let displayStart = seg.tStart;
+              let displayEnd   = seg.tEnd;
+              if(hasMultipleSegs && overlapDur > 0 && currentSegments.length >= 2){
+                if(i === 0){ displayStart = startTime; displayEnd = mid + half; }
+                if(i === 1){ displayStart = mid - half; displayEnd = endTime; }
+              }
+              const isAdjusted = hasMultipleSegs && overlapDur > 0 && currentSegments.length >= 2;
+
+              return (
+                <div key={i} style={{background:theme.cardBg,borderRadius:7,padding:"8px 10px",marginBottom:6,border:`1px solid ${isAdjusted?"rgba(126,126,126,0.3)":theme.cardBorder}`}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                    <span style={{fontSize:10,color:theme.textMuted,fontFamily:"monospace"}}>
+                      {seg.type==='point'?'◉':'✏'} {seg.type==='point'?`(${seg.path[0].x.toFixed(2)}, ${seg.path[0].y.toFixed(2)})`: `Free Seg ${i+1}`}
+                    </span>
+                    <button onClick={()=>removeSegment(i)} style={{background:"transparent",border:"none",color:theme.textDim,cursor:"pointer",fontSize:12}}>✕</button>
                   </div>
-                  <div style={{color:theme.textFaint,fontSize:10,marginTop:10}}>→</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:2}}>t end</div>
-                    <input type="number" value={seg.tEnd} onChange={e=>updateSegTime(i,'tEnd',e.target.value)}
-                      style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,color:theme.textMuted,borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:9,color:isAdjusted?"#75787d":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
+                        t start{isAdjusted&&i===1?" (adjusted)":""}
+                      </div>
+                      <input type="number"
+                        value={isAdjusted ? displayStart : seg.tStart}
+                        onChange={e=>{ if(!isAdjusted) updateSegTime(i,'tStart',e.target.value); }}
+                        readOnly={isAdjusted}
+                        style={{width:"100%",background:isAdjusted?"rgba(251,191,36,0.06)":theme.inputBg,
+                          border:`1px solid ${isAdjusted?"rgba(146,146,146,1)":theme.cardBorder}`,
+                          color:isAdjusted?"#75787d":theme.textMuted,
+                          borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",
+                          boxSizing:"border-box",cursor:isAdjusted?"default":"text"}}/>
+                    </div>
+                    <div style={{color:theme.textFaint,fontSize:10,marginTop:10}}>→</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:9,color:isAdjusted?"#75787d":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
+                        t end{isAdjusted&&i===0?" (adjusted)":""}
+                      </div>
+                      <input type="number"
+                        value={isAdjusted ? displayEnd : seg.tEnd}
+                        onChange={e=>{ if(!isAdjusted) updateSegTime(i,'tEnd',e.target.value); }}
+                        readOnly={isAdjusted}
+                        style={{width:"100%",background:isAdjusted?"rgba(251,191,36,0.06)":theme.inputBg,
+                          border:`1px solid ${isAdjusted?"rgba(146,146,146,1)":theme.cardBorder}`,
+                          color:isAdjusted?"#75787d":theme.textMuted,
+                          borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",
+                          boxSizing:"border-box",cursor:isAdjusted?"default":"text"}}/>
+                    </div>
                   </div>
+                  {isAdjusted&&(
+                    <div style={{fontSize:8,color:"#949ba4",fontFamily:"monospace",marginTop:4,opacity:0.8}}>
+                      Auto-adjusted by symmetric overlap
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {hasMultipleSegs&&(()=>{
-              const overlapZones = [];
-              for(let i=0; i<currentSegments.length-1; i++){
-                const a = currentSegments[i], b = currentSegments[i+1];
-                const zoneStart = Math.min(a.tEnd, b.tStart);
-                const zoneEnd   = Math.max(a.tEnd, b.tStart);
-                const maxPossible = zoneEnd - zoneStart;
-                if(maxPossible > 0) overlapZones.push({zoneStart, zoneEnd, maxPossible});
-              }
-              const maxOverlap = overlapZones.length
-                ? Math.max(...overlapZones.map(z => z.maxPossible))
-                : 0;
+              const mid = Math.round((startTime + endTime) / 2);
+              const half = Math.round(overlapDur / 2);
+              const coStart = mid - half;
+              const coEnd   = mid + half;
+              const maxOverlap = endTime - startTime;
               const clampedOverlap = Math.min(overlapDur, maxOverlap);
 
               return (
@@ -966,7 +1042,7 @@ export default function App() {
                     l="Transition Duration"
                     v={clampedOverlap}
                     set={v => setOverlapDur(Math.min(v, maxOverlap))}
-                    min={0} max={maxOverlap > 0 ? maxOverlap : 1000} integer u=" t"/>
+                    min={0} max={maxOverlap} integer u=" t"/>
 
                   {/* Warning: overlap too short */}
                   {overlapIsTooShort && (
@@ -976,17 +1052,11 @@ export default function App() {
                   )}
 
                   {/* Coexistence zone feedback */}
-                  {clampedOverlap > 0 && overlapZones.length > 0 && (
+                  {clampedOverlap > 0 && (
                     <div style={{fontSize:9,fontFamily:"monospace",color:"#fbbf24",marginTop:2,marginBottom:4,lineHeight:1.6}}>
-                      {overlapZones.map((z,i) => {
-                        const coStart = z.zoneEnd - clampedOverlap;
-                        const coEnd   = z.zoneEnd;
-                        return (
-                          <div key={i}>
-                            〰 Coexistence: t={Math.max(coStart,z.zoneStart)} → t={coEnd} ({Math.min(clampedOverlap, z.maxPossible)}t)
-                          </div>
-                        );
-                      })}
+                      〰 Coexistence: t={coStart} → t={coEnd} ({clampedOverlap}t)
+                      <br/>
+                      <span style={{color:theme.textFaint}}>Transition point: t={mid} (midpoint)</span>
                     </div>
                   )}
 
@@ -1031,30 +1101,20 @@ export default function App() {
 
         {/* ── Output / Dataset ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:14}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Dataset Output Type</div>
-          <div style={{display:"flex",flexDirection:"column",gap:3,marginBottom:10}}>
-            {[
-              ["complete","Complete","with drift_occurred"],
-              ["test",   "Test",   "with drift_occurred"],
-              ["train",  "Train",  "without drift_occurred"],
-            ].map(([mode,label,tip])=>(
-              <button key={mode} onClick={()=>setDatasetMode(mode)} style={{
-                padding:"5px 10px",borderRadius:5,border:"1px solid",textAlign:"left",
-                cursor:"pointer",fontFamily:"monospace",fontSize:10,
-                display:"flex",justifyContent:"space-between",alignItems:"center",
-                borderColor:datasetMode===mode?"#3b82f6":theme.cardBorder,
-                background:datasetMode===mode?"rgba(59,130,246,0.12)":"transparent",
-                color:datasetMode===mode?"#93c5fd":theme.textDim,
-              }}>
-                <span style={{fontWeight:700}}>{label}</span>
-                <span style={{fontSize:9,opacity:0.65}}>{tip}</span>
-              </button>
-            ))}
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
+            textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
+            Dataset Split
+          </div>
+          <NumInput l="Train %" v={trainPct} set={setTrainPct} min={10} max={90} integer/>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:10}}>
+            Train: {trainPct}% · Test: {100-trainPct}%
+            <br/>Downloads 2 files (_train / _test)
           </div>
           <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Filename</div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <input value={filename} onChange={e=>setFilename(e.target.value)}
-              style={{flex:1,background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,color:theme.textMuted,borderRadius:6,padding:"4px 7px",fontSize:11,fontFamily:"monospace"}}/>
+              style={{flex:1,background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
+                color:theme.textMuted,borderRadius:6,padding:"4px 7px",fontSize:11,fontFamily:"monospace"}}/>
           </div>
         </div>
 
@@ -1069,12 +1129,25 @@ export default function App() {
             {trajectories.map((t,i)=>(
               <div key={t.id} style={{marginBottom:7,padding:"5px 8px",borderRadius:6,
                 border:`1px solid ${theme.cardBorder}`}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom: t.segments.length>1?6:0}}>
                   <div style={{width:8,height:8,borderRadius:"50%",background:t.color,flexShrink:0}}/>
                   <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",flex:1}}>
                     C{i} · {t.startTime}→{t.endTime} · {t.segments.length} seg
                   </span>
                 </div>
+                {t.segments.map((seg,si)=>(
+                  <div key={si} style={{display:"flex",alignItems:"center",gap:4,
+                    marginLeft:16,marginTop:3}}>
+                    <span style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace",flexShrink:0}}>
+                      {seg.type==='point'?'◉':'✏'} seg{si+1}
+                    </span>
+                    <span style={{fontSize:8,color:theme.textMuted,fontFamily:"monospace",
+                      background:theme.inputBg,borderRadius:4,padding:"1px 5px",
+                      border:`1px solid ${theme.cardBorder}`}}>
+                      {seg.tStart}→{seg.tEnd}
+                    </span>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -1101,11 +1174,6 @@ export default function App() {
               </button>
             ))}
           </div>
-          {inputMode==='point'&&(
-            <button onClick={()=>setPointConnected(p=>!p)} style={{padding:"4px 10px",borderRadius:6,border:"1px solid",fontSize:11,cursor:"pointer",borderColor:pointConnected?"#7c3aed":theme.border,background:pointConnected?"rgba(124,58,237,0.15)":"transparent",color:pointConnected?"#c4b5fd":theme.textDim,fontFamily:"monospace"}}>
-              {pointConnected?"⟷ Connected":"· Disconnected"}
-            </button>
-          )}
           <div style={{width:1,height:20,background:theme.border,margin:"0 2px"}}/>
           <IBtn onClick={finishCluster} title="Finish Cluster" accent>＋</IBtn>
           <IBtn onClick={preview} title="Preview">◎</IBtn>
@@ -1118,6 +1186,7 @@ export default function App() {
           </button>
           <button onClick={downloadCSV} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ CSV</button>
           <button onClick={downloadARFF} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ ARFF</button>
+          <button onClick={downloadMeta} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ META</button>
           <button onClick={downloadImage} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ PNG</button>
 
           <button onClick={()=>setDarkMode(d=>!d)} title="Alternar tema" style={{width:34,height:34,borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textMuted,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:16}}>
@@ -1164,7 +1233,7 @@ export default function App() {
           onClick={()=>setShowHelp(false)}>
           <div style={{background:theme.sidebar,border:`1px solid ${theme.border}`,borderRadius:14,padding:28,maxWidth:520,width:"90%",maxHeight:"85vh",overflowY:"auto"}}
             onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:14,fontWeight:800,marginBottom:20,color:theme.text}}>Como usar</div>
+            <div style={{fontSize:14,fontWeight:800,marginBottom:20,color:theme.text}}>Help</div>
             {[
               ["✏ Draw","Drag to draw the continuous path of the centroid over time."],
               ["◉ Points","Click to position discrete centroids in feature space."],
@@ -1172,7 +1241,6 @@ export default function App() {
               ["· Disconnected","Centroid jumps abruptly — Abrupt drift."],
               ["〰 Overlap","With 2+ free segments and overlap > 0 — Gradual drift."],
               ["● Multi-Label","Points within the radius (N×σ) of another cluster receive multiple labels."],
-              ["◆ Features Extras","In the sidebar, select a cluster as a target and activate '+ Add feature'. Click on the canvas to position the centroid of f3, f4… for that cluster. Each cluster has independent centroids and you can remove features individually with ✕."],
               ["Output","Complete/Test: CSV with drift_occurred. Training: without drift_occurred."],
               ["▶ Generate","Animates and computes the dataset."],
               ["⬇ CSV / PNG","Downloads the dataset or canvas image."],
@@ -1182,7 +1250,7 @@ export default function App() {
                 <div style={{fontSize:11,color:theme.textDim}}>{d}</div>
               </div>
             ))}
-            <button onClick={()=>setShowHelp(false)} style={{marginTop:16,width:"100%",padding:"7px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>Fechar</button>
+            <button onClick={()=>setShowHelp(false)} style={{marginTop:16,width:"100%",padding:"7px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>Close</button>
           </div>
         </div>
       )}
