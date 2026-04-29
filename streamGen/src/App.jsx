@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 const CLUSTER_COLORS = ["#e05c5c","#4e9af1","#4ec994","#f5a623","#b36fd6","#f06c9b","#00c9c9","#d4b44a"];
 const FEATURE_COLORS = ["#f5a623","#a78bfa","#34d399","#f472b6","#60a5fa","#fb923c","#a3e635","#e879f9","#67e8f9","#fde68a"];
+const GRID_SIZE = 100;
 const randomColor  = (idx) => CLUSTER_COLORS[idx % CLUSTER_COLORS.length];
 const featureColor = (fi)  => FEATURE_COLORS[fi  % FEATURE_COLORS.length];
 
@@ -68,6 +69,34 @@ function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtr
   const gen = (cx,cy,n) => distType==="RandomRBF" ? rbfPoints(cx,cy,std,n) : gaussianPoints(cx,cy,std,n);
   const MULTILABEL_COLOR = darkCanvas ? "#ffffff" : "#111111";
 
+  // Extra Features grid
+  const GRID_RES = 100; 
+  const featureGrids = Array.from({length: numExtraFeatures}, () => {
+    const grid = [];
+    for(let i = 0; i < GRID_RES; i++){
+      grid.push(Array.from({length: GRID_RES}, () => boxMuller() * std));
+    }
+    return grid;
+  });
+
+  const toGrid = (v) => Math.min(GRID_RES-1, Math.max(0,
+    Math.floor((v + 1) / 2 * GRID_RES)
+  ));
+
+  const neighborSum = (grid, ci, cj) => {
+    let sum = 0;
+    for(let a = -1; a <= 1; a++){
+      for(let b = -1; b <= 1; b++){
+        if(a === 0 && b === 0) continue;
+        const ni = ci + a, nj = cj + b;
+        if(ni >= 0 && ni < GRID_RES && nj >= 0 && nj < GRID_RES){
+          sum += grid[ni][nj];
+        }
+      }
+    }
+    return sum;
+  };
+
   for (let t = gStart; t <= gEnd; t++) {
     const allCentroids = trajs.map((traj) => {
       const activeSegs = traj.segments.filter(s => s.tStart <= t && t <= s.tEnd);
@@ -119,9 +148,15 @@ function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtr
       const fcs = trajs[ti].featureCentroids || [];
       const genWithExtras = (cx, cy, count) =>
         gen(cx, cy, count).map(pt => {
+          
+          const mu = (cx + cy) / 2;
+          const ci = toGrid(cy); // y
+          const cj = toGrid(cx); // coluna = x
           const extras = Array.from({length: numExtraFeatures}, (_, fi) => {
-            const fc = fcs[fi];
-            return fc ? Math.max(-1, Math.min(1, fc.x + boxMuller()*std)) : 0;
+            const s = neighborSum(featureGrids[fi], ci, cj);
+            
+            const maxVal = 8 * (3 * std); 
+            return Math.max(-1, Math.min(1, s / maxVal + boxMuller() * std));
           });
           return {...pt, extras, srcTrajIdx: ti};
         });
@@ -172,6 +207,7 @@ function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtr
 function makeCSV(pointClass, trajs, driftTicks, numExtraFeatures, datasetMode) {
   const includeDrift = datasetMode !== "train";
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
+
   const header = [
     "global_id","timestamp","f1","f2",
     ...extraCols,
@@ -179,15 +215,35 @@ function makeCSV(pointClass, trajs, driftTicks, numExtraFeatures, datasetMode) {
     ...trajs.map((_,i)=>`class_${i}`)
   ].join(",");
 
-  const rows = Object.entries(pointClass)
-    .sort((a,b)=>a[1].t-b[1].t)
-    .map(([id,{x,y,extras,t,labels}])=>{
-      const ev = Array.from({length:numExtraFeatures},(_,i)=>
-        (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
-      );
-      return [id,t,x.toFixed(6),y.toFixed(6),...ev,
-        ...(includeDrift?[driftTicks.has(t)?1:0]:[]),...labels].join(",");
+  const byTick = {};
+  Object.entries(pointClass).forEach(([id, pt]) => {
+    if(!byTick[pt.t]) byTick[pt.t] = [];
+    byTick[pt.t].push([id, pt]);
+  });
+  const shuffled = Object.keys(byTick)
+    .map(Number).sort((a,b) => a-b)
+    .flatMap(t => {
+      const group = byTick[t];
+      for(let i = group.length-1; i > 0; i--){
+        const j = Math.floor(Math.random() * (i+1));
+        [group[i], group[j]] = [group[j], group[i]];
+      }
+      return group;
     });
+
+  const rows = shuffled.map(([id,{x,y,extras,t,labels}]) => {
+    const ev = Array.from({length:numExtraFeatures}, (_,i) =>
+      (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
+    );
+    return [
+      id, t,
+      x.toFixed(6), y.toFixed(6),
+      ...ev,
+      ...(includeDrift ? [driftTicks.has(t)?1:0] : []),
+      ...labels
+    ].join(",");
+  });
+
   return [header,...rows].join("\n");
 }
 
@@ -209,22 +265,34 @@ function makeARFF(pointClass, trajs, driftTicks, numExtraFeatures, datasetMode) 
   lines.push("");
   lines.push("@data");
 
-  Object.entries(pointClass)
-    .sort((a,b) => a[1].t - b[1].t)
-    .forEach(([id,{x,y,extras,t,labels}]) => {
-      const ev = Array.from({length:numExtraFeatures}, (_,i) =>
-        (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
-      );
-      lines.push([
-        id, t,
-        x.toFixed(6), y.toFixed(6),
-        ...ev,
-        ...(includeDrift ? [driftTicks.has(t)?1:0] : []),
-        ...labels
-      ].join(","));
+  const byTick = {};
+  Object.entries(pointClass).forEach(([id, pt]) => {
+    if(!byTick[pt.t]) byTick[pt.t] = [];
+    byTick[pt.t].push([id, pt]);
+  });
+  const shuffled = Object.keys(byTick)
+    .map(Number).sort((a,b) => a-b)
+    .flatMap(t => {
+      const group = byTick[t];
+      for(let i = group.length-1; i > 0; i--){
+        const j = Math.floor(Math.random() * (i+1));
+        [group[i], group[j]] = [group[j], group[i]];
+      }
+      return group;
     });
 
-  return lines.join("\n");
+  shuffled.forEach(([id,{x,y,extras,t,labels}]) => {
+    const ev = Array.from({length:numExtraFeatures}, (_,i) =>
+      (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
+    );
+    lines.push([
+      id, t,
+      x.toFixed(6), y.toFixed(6),
+      ...ev,
+      ...(includeDrift ? [driftTicks.has(t)?1:0] : []),
+      ...labels
+    ].join(","));
+  });
 }
 
 // ─── Tema ─────────────────────────────────────────────────────────────────────
@@ -265,15 +333,7 @@ export default function App() {
   const [trajectories,    setTrajectories]    = useState([]);
 
   // ── Features ────────────────────────────────────────────────────────────────
-  // const [numExtraFeatures,  setNumExtraFeatures]  = useState(0);
-  
-  const [featurePickMode,   setFeaturePickMode]   = useState(false);
-  
-  const [featurePickTarget, setFeaturePickTarget] = useState(-1);
-  const featurePickModeRef   = useRef(false);
-  const featurePickTargetRef = useRef(-1);
-  useEffect(()=>{ featurePickModeRef.current   = featurePickMode;   },[featurePickMode]);
-  useEffect(()=>{ featurePickTargetRef.current = featurePickTarget; },[featurePickTarget]);
+  const [numExtraFeatures,  setNumExtraFeatures]  = useState(0);
 
   // Parâmetros
   const [std,         setStd]         = useState(0.05);
@@ -333,8 +393,6 @@ export default function App() {
     const col=currentColorRef.current;
     const isDrawing=drawingRef.current;
     const ptConn=pointConnectedRef.current;
-    const fpMode=featurePickModeRef.current;
-    const fpTarget=featurePickTargetRef.current;
 
     ctx.fillStyle=th.canvasBg; ctx.fillRect(0,0,W,H);
     ctx.strokeStyle=th.grid; ctx.lineWidth=1;
@@ -368,7 +426,7 @@ export default function App() {
         }
         // Diamante
         ctx.save();
-        ctx.fillStyle=fc_color; ctx.globalAlpha= fpMode&&fpTarget===ti ? 1 : 0.75;
+        ctx.fillStyle=fc_color; ctx.globalAlpha=0.75;
         ctx.beginPath();
         ctx.moveTo(p.px,p.py-8);ctx.lineTo(p.px+6,p.py);
         ctx.lineTo(p.px,p.py+8);ctx.lineTo(p.px-6,p.py);
@@ -378,20 +436,6 @@ export default function App() {
         ctx.fillText(`C${ti}·f${fi+3}`,p.px+9,p.py+3);
         ctx.restore();
       });
-    }
-
-    // ── Overlay feature pick ───────────────────────────────────────────────
-    if(fpMode && fpTarget>=0){
-      ctx.fillStyle="rgba(0,0,0,0.18)"; ctx.fillRect(0,0,W,H);
-      const traj=trajRef.current[fpTarget];
-      if(traj){
-        const nDone=(traj.featureCentroids||[]).length;
-        const fc_color=featureColor(nDone);
-        ctx.fillStyle=fc_color; ctx.globalAlpha=1;
-        ctx.font="bold 12px monospace";
-        const msg=`Click to position f${nDone+3} from C${fpTarget}`;
-        ctx.fillText(msg,W/2-ctx.measureText(msg).width/2,30);
-      }
     }
 
     // ── Trajetórias finalizadas ────────────────────────────────────────────
@@ -490,28 +534,13 @@ export default function App() {
     }
   },[w2c]);
 
-  useEffect(()=>{ render(); },[render,theme,trajectories,currentSegments,currentPath,currentColor,drawing,pointConnected,featurePickMode,featurePickTarget]);
+  useEffect(()=>{ render(); },[render,theme,trajectories,currentSegments,currentPath,currentColor,drawing,pointConnected]);
 
   // ─── Mouse / Touch ────────────────────────────────────────────────────────
   const handleDown = useCallback((ex,ey)=>{
     if(isAnimating) return;
     const canvas=canvasRef.current;
     const pt=c2w(canvas,ex,ey);
-
-    // Feature pick
-    if(featurePickModeRef.current && featurePickTargetRef.current>=0){
-      const ti=featurePickTargetRef.current;
-      setTrajectories(prev=>{
-        const updated=[...prev];
-        const traj={...updated[ti]};
-        const fcs=[...(traj.featureCentroids||[]), {x:pt.x,y:pt.y}];
-        traj.featureCentroids=fcs;
-        updated[ti]=traj;
-        setStatus({msg:`f${fcs.length+2} added to C${ti} in (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)})`, color:featureColor(fcs.length-1)});
-        return updated;
-      });
-      return;
-    }
 
     const col=currentColor||randomColor(trajRef.current.length);
     setCurrentColor(col);
@@ -602,16 +631,15 @@ export default function App() {
   },[]);
 
   const undo = useCallback(()=>{
-    if(featurePickMode){setFeaturePickMode(false);setFeaturePickTarget(-1);setStatus({msg:"Feature mode canceled.",color:"#94a3b8"});return;}
     if(currentPath.length>0){setCurrentPath([]);return;}
     if(currentSegments.length>0){setCurrentSegments(p=>p.slice(0,-1));setStatus({msg:"Removed.",color:"#94a3b8"});}
     else if(trajRef.current.length>0){setTrajectories(p=>p.slice(0,-1));setStatus({msg:"Cluster removed.",color:"#94a3b8"});}
     else setStatus({msg:"Nothing to undo.",color:"#f97316"});
-  },[currentPath,currentSegments,featurePickMode]);
+  },[currentPath,currentSegments]);
 
   const clearAll = useCallback(()=>{
     setTrajectories([]);setCurrentSegments([]);setCurrentPath([]);setCurrentColor(null);
-    setPrecomp(null);setTick(null);setFeaturePickMode(false);setFeaturePickTarget(-1);
+    setPrecomp(null);setTick(null);
     if(animRef.current) clearTimeout(animRef.current);
     setIsAnimating(false);
     setStatus({msg:"Cleaned.",color:"#22c55e"});
@@ -641,13 +669,6 @@ export default function App() {
   },[]);
 
   const generate = useCallback(()=>{
-
-    const counts = trajRef.current.map(t=>(t.featureCentroids||[]).length);
-    if(counts.length>1){
-      const mx=Math.max(...counts), mn=Math.min(...counts);
-      if(mx!==mn){ setStatus({msg:`Inconsistent features: clusters have between ${mn} and ${mx} features. Match before generating...`,color:"#ef4444"}); return; }
-    }
-    const effFeatures = counts.length ? Math.max(...counts,0) : 0;
     let allT=[...trajRef.current];
     const pending=[...currentSegments,...(currentPath.length>3
       ?[{type:'free',path:currentPath,tStart:startTime,tEnd:endTime,connected:false}]
@@ -671,11 +692,11 @@ export default function App() {
     if(!allT.length){setStatus({msg:"No cluster!",color:"#ef4444"});return;}
     setStatus({msg:"Computing...",color:"#94a3b8"});
     const darkCanvas=themeRef.current.canvasBg==="#080c14";
-    const res=precomputeData(allT,{std,pts,distType,labelMode,mlRadius,numExtraFeatures:effFeatures,darkCanvas});
+    const res=precomputeData(allT,{std,pts,distType,labelMode,mlRadius,numExtraFeatures,darkCanvas});
     if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
     setPrecomp(res);setIsAnimating(true);tickRef.current=res.gStart;setTick(res.gStart);
     setStatus({msg:"Animating...",color:"#3b82f6"});
-  },[currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius]);
+  },[currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures]);
 
   const precompRef=useRef(null),speedRef=useRef(50);
   useEffect(()=>{precompRef.current=precomp;},[precomp]);
@@ -700,30 +721,20 @@ export default function App() {
 
   const downloadCSV = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const counts=trajRef.current.map(t=>(t.featureCentroids||[]).length);
-    if(counts.length>1&&Math.max(...counts)!==Math.min(...counts)){
-      setStatus({msg:"Inconsistent features between clusters. Match them before downloading.",color:"#ef4444"});return;
-    }
-    const effFeatures=counts.length?Math.max(...counts,0):0;
-    const csv=makeCSV(precomp.pointClass,trajRef.current,precomp.driftTicks,effFeatures,datasetMode);
+    const csv=makeCSV(precomp.pointClass,trajRef.current,precomp.driftTicks,numExtraFeatures,datasetMode);
     const blob=new Blob([csv],{type:"text/csv"}),url=URL.createObjectURL(blob),a=document.createElement("a");
     a.href=url;a.download=filename.endsWith(".csv")?filename:filename+".csv";a.click();URL.revokeObjectURL(url);
     setStatus({msg:`"${a.download}" Downloaded!`,color:"#22c55e"});
-  },[precomp,filename,datasetMode]);
+  },[precomp,filename,datasetMode,numExtraFeatures]);
 
   const downloadARFF = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Gere o stream primeiro!",color:"#f97316"});return;}
-    const counts=trajRef.current.map(t=>(t.featureCentroids||[]).length);
-    if(counts.length>1&&Math.max(...counts)!==Math.min(...counts)){
-      setStatus({msg:"Inconsistent features between clusters. Match them before downloading.",color:"#ef4444"});return;
-    }
-    const effFeatures=counts.length?Math.max(...counts,0):0;
-    const arff=makeARFF(precomp.pointClass,trajRef.current,precomp.driftTicks,effFeatures,datasetMode);
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const arff=makeARFF(precomp.pointClass,trajRef.current,precomp.driftTicks,numExtraFeatures,datasetMode);
     const blob=new Blob([arff],{type:"text/plain"}),url=URL.createObjectURL(blob),a=document.createElement("a");
     const base=filename.endsWith(".csv")?filename.replace(".csv",""):filename;
     a.href=url;a.download=base+".arff";a.click();URL.revokeObjectURL(url);
-    setStatus({msg:`"${a.download}" baixado!`,color:"#22c55e"});
-  },[precomp,filename,datasetMode]);
+    setStatus({msg:`"${a.download}" downloaded!`,color:"#22c55e"});
+  },[precomp,filename,datasetMode,numExtraFeatures]);
 
   const downloadImage = useCallback(()=>{
     const canvas=canvasRef.current; if(!canvas) return;
@@ -747,6 +758,7 @@ export default function App() {
   const streamDuration=Math.max(1, endTime-startTime);
   const minRecommended=Math.max(2, Math.round(streamDuration*0.05));
   const overlapIsTooShort=overlapDur>0 && overlapDur<minRecommended;
+  const isLocked = trajectories.length > 0;
 
   // WARNINGS -------------------------------
   const inferredType=!hasMultipleSegs
@@ -866,7 +878,7 @@ export default function App() {
                 raio = {(mlRadius*std).toFixed(4)} u
               </div>
               <div style={{fontSize:9,color:theme.textFaint,lineHeight:1.5}}>
-                Pontos dentro do raio de outro cluster recebem ambos os rótulos.
+                Points within the radius of another cluster receive both labels.
               </div>
             </div>
           )}
@@ -877,79 +889,30 @@ export default function App() {
           )}
         </div>
 
-        {/* ── Features Extras por Cluster ── */}
+        {/* ── Features Extras Globais ── */}
         <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:14,marginTop:4}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
+          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
+            textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
             Extra Features
-            {maxFeaturesUsed>0&&<span style={{marginLeft:6,color:featuresConsistent?"#f5a623":"#f87171"}}>{featuresConsistent?`${maxFeaturesUsed} per cluster`:"inconsistent!"}</span>}
+            {numExtraFeatures>0&&<span style={{marginLeft:6,color:"#f5a623"}}>
+              {numExtraFeatures} feature{numExtraFeatures>1?"s":""} — grid {GRID_SIZE}×{GRID_SIZE}
+            </span>}
           </div>
-
-          <div style={{fontSize:9,color:theme.textFaint,lineHeight:1.5,marginBottom:10}}>
-            Select a cluster and enable the mode to click on the canvas and position independent centroids of extra features.
+          <div style={{fontSize:9,color:theme.textFaint,lineHeight:1.6,marginBottom:8}}>
+            Global features generated via neighborhood convolution on a discrete grid mapped to the canvas. They follow the centroid over time.
           </div>
-
-          {trajectories.length===0 ? (
-            <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>Create at least one cluster first.</div>
-          ) : (
-            <>
-              {/* Seletor de cluster alvo */}
-              <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Cluster</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
-                {trajectories.map((t,i)=>(
-                  <button key={t.id} onClick={()=>{
-                    setFeaturePickTarget(i);
-                    setFeaturePickMode(false);
-                  }} style={{padding:"3px 8px",borderRadius:5,border:"1px solid",fontSize:10,cursor:"pointer",fontFamily:"monospace",
-                    borderColor:featurePickTarget===i?t.color:theme.cardBorder,
-                    background:featurePickTarget===i?`${t.color}22`:"transparent",
-                    color:featurePickTarget===i?t.color:theme.textDim}}>
-                    C{i}
-                  </button>
-                ))}
-              </div>
-
-              {featurePickTarget>=0&&(
-                <>
-                  {/* Botão ativar/desativar modo */}
-                  <button onClick={()=>setFeaturePickMode(m=>!m)} style={{
-                    width:"100%",padding:"6px 10px",borderRadius:6,border:"1px solid",
-                    fontSize:10,cursor:"pointer",fontFamily:"monospace",marginBottom:8,
-                    borderColor:featurePickMode?featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length):theme.cardBorder,
-                    background:featurePickMode?`${featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length)}22`:"transparent",
-                    color:featurePickMode?featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length):theme.textDim,
-                  }}>
-                    {featurePickMode
-                      ?`◉ Click on the canvas → f${(trajectories[featurePickTarget]?.featureCentroids||[]).length+3} for C${featurePickTarget}`
-                      :`+ Add feature to C${featurePickTarget}`}
-                  </button>
-
-                  {/* Lista de features do cluster selecionado */}
-                  {(trajectories[featurePickTarget]?.featureCentroids||[]).length>0&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                      {(trajectories[featurePickTarget].featureCentroids||[]).map((fc,fi)=>(
-                        <div key={fi} style={{display:"flex",alignItems:"center",gap:6,
-                          background:theme.cardBg,borderRadius:5,padding:"4px 8px",
-                          border:`1px solid ${theme.cardBorder}`}}>
-                          <div style={{width:8,height:8,borderRadius:1,transform:"rotate(45deg)",
-                            background:featureColor(fi),flexShrink:0}}/>
-                          <span style={{fontSize:9,color:featureColor(fi),fontFamily:"monospace",fontWeight:700,flexShrink:0}}>
-                            f{fi+3}
-                          </span>
-                          <span style={{fontSize:9,color:theme.textDim,fontFamily:"monospace",flex:1}}>
-                            ({fc.x.toFixed(2)}, {fc.y.toFixed(2)})
-                          </span>
-                          <button onClick={()=>removeFeatureCentroid(featurePickTarget,fi)}
-                            style={{background:"transparent",border:"none",color:theme.textDim,cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(trajectories[featurePickTarget]?.featureCentroids||[]).length===0&&(
-                    <div style={{fontSize:9,color:theme.textFaint,fontStyle:"italic"}}>No features added to C{featurePickTarget} yet.</div>
-                  )}
-                </>
-              )}
-            </>
+          <NumInput l="Nº of extra features" v={numExtraFeatures}
+            set={setNumExtraFeatures} min={0} max={10} integer
+            disabled={isLocked}/>
+          {numExtraFeatures>0&&(
+            <div style={{fontSize:9,color:"#f5a623",fontFamily:"monospace",marginTop:-8,marginBottom:8}}>
+                f1, f2{Array.from({length:numExtraFeatures},(_,i)=>`, f${i+3}`).join("")}
+            </div>
+          )}
+          {isLocked&&(
+            <div style={{fontSize:9,color:"#f87171",lineHeight:1.5}}>
+              Locked after 1st cluster. Clear all (✕) to change.
+            </div>
           )}
         </div>
 
@@ -1092,7 +1055,6 @@ export default function App() {
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <input value={filename} onChange={e=>setFilename(e.target.value)}
               style={{flex:1,background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,color:theme.textMuted,borderRadius:6,padding:"4px 7px",fontSize:11,fontFamily:"monospace"}}/>
-            <span style={{fontSize:10,color:theme.label,fontFamily:"monospace"}}>.csv</span>
           </div>
         </div>
 
@@ -1103,43 +1065,18 @@ export default function App() {
               <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em"}}>
                 Clusters ({trajectories.length})
               </div>
-              {!featuresConsistent&&(
-                <span style={{fontSize:8,color:"#ef4444",fontFamily:"monospace",border:"1px solid #7f1d1d",borderRadius:4,padding:"1px 5px"}}>
-                  ⚠ features desiguais
-                </span>
-              )}
             </div>
-            {trajectories.map((t,i)=>{
-              const nf=(t.featureCentroids||[]).length;
-              const isIncomplete = featuresConsistent ? false : nf < maxFeaturesUsed;
-              return (
-                <div key={t.id} style={{marginBottom:7,padding:"5px 8px",borderRadius:6,
-                  border:`1px solid ${isIncomplete?"#7f1d1d":theme.cardBorder}`,
-                  background:isIncomplete?"rgba(239,68,68,0.06)":"transparent"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{width:8,height:8,borderRadius:"50%",background:t.color,flexShrink:0}}/>
-                    <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",flex:1}}>
-                      C{i} · {t.startTime}→{t.endTime} · {t.segments.length} seg
-                    </span>
-                    <span style={{fontSize:9,fontFamily:"monospace",
-                      color:isIncomplete?"#f87171":nf>0?"#f5a623":theme.textFaint}}>
-                      {nf>0?`${nf}f extra${nf>1?"s":""}`:maxFeaturesUsed>0?"0f ⚠":"sem feat."}
-                    </span>
-                  </div>
-                  {isIncomplete&&(
-                    <div style={{fontSize:8,color:"#f87171",fontFamily:"monospace",marginTop:3,marginLeft:16}}>
-                      Faltam {maxFeaturesUsed-nf} feature{maxFeaturesUsed-nf>1?"s":""} para igualar
-                    </div>
-                  )}
+            {trajectories.map((t,i)=>(
+              <div key={t.id} style={{marginBottom:7,padding:"5px 8px",borderRadius:6,
+                border:`1px solid ${theme.cardBorder}`}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:t.color,flexShrink:0}}/>
+                  <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",flex:1}}>
+                    C{i} · {t.startTime}→{t.endTime} · {t.segments.length} seg
+                  </span>
                 </div>
-              );
-            })}
-            {!featuresConsistent&&(
-              <div style={{fontSize:9,color:"#f87171",lineHeight:1.5,marginTop:4,padding:"6px 8px",
-                borderRadius:5,background:"rgba(239,68,68,0.08)",border:"1px solid #7f1d1d"}}>
-                All clusters must have {maxFeaturesUsed} extra {maxFeaturesUsed>1?"s":""} features to generate an output file.
               </div>
-            )}
+            ))}
           </div>
         )}
 
@@ -1155,31 +1092,20 @@ export default function App() {
 
           <div style={{display:"flex",gap:2,background:theme.bg,borderRadius:7,padding:2,border:`1px solid ${theme.border}`}}>
             {[["free","✏","Draw"],["point","◉","Points"]].map(([mode,icon,label])=>(
-              <button key={mode} onClick={()=>{setInputMode(mode);setFeaturePickMode(false);}} title={label}
+              <button key={mode} onClick={()=>setInputMode(mode)} title={label}
                 style={{padding:"4px 10px",borderRadius:5,border:"none",fontSize:12,cursor:"pointer",
-                  background:inputMode===mode&&!featurePickMode?theme.cardBg:"transparent",
-                  color:inputMode===mode&&!featurePickMode?theme.text:theme.textDim,
+                  background:inputMode===mode?theme.cardBg:"transparent",
+                  color:inputMode===mode?theme.text:theme.textDim,
                   display:"flex",alignItems:"center",gap:5}}>
                 {icon}<span style={{fontSize:10}}>{label}</span>
               </button>
             ))}
           </div>
-
-          {inputMode==='point'&&!featurePickMode&&(
+          {inputMode==='point'&&(
             <button onClick={()=>setPointConnected(p=>!p)} style={{padding:"4px 10px",borderRadius:6,border:"1px solid",fontSize:11,cursor:"pointer",borderColor:pointConnected?"#7c3aed":theme.border,background:pointConnected?"rgba(124,58,237,0.15)":"transparent",color:pointConnected?"#c4b5fd":theme.textDim,fontFamily:"monospace"}}>
               {pointConnected?"⟷ Connected":"· Disconnected"}
             </button>
           )}
-
-          {featurePickMode&&featurePickTarget>=0&&(
-            <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:6,
-              border:`1px solid ${featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length)}`,
-              background:`${featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length)}18`,
-              fontSize:10,fontFamily:"monospace",color:featureColor((trajectories[featurePickTarget]?.featureCentroids||[]).length)}}>
-              ◆ Positioning f{(trajectories[featurePickTarget]?.featureCentroids||[]).length+3} → C{featurePickTarget}
-            </div>
-          )}
-
           <div style={{width:1,height:20,background:theme.border,margin:"0 2px"}}/>
           <IBtn onClick={finishCluster} title="Finish Cluster" accent>＋</IBtn>
           <IBtn onClick={preview} title="Preview">◎</IBtn>
@@ -1211,8 +1137,7 @@ export default function App() {
         </div>
 
         {/* Canvas */}
-        <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",
-          cursor:featurePickMode&&featurePickTarget>=0?"crosshair":isAnimating?"default":"crosshair"}}>
+        <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:isAnimating?"default":"crosshair"}}>
           <canvas ref={canvasRef}
             onMouseDown={e=>handleDown(e.clientX,e.clientY)}
             onMouseMove={e=>handleMove(e.clientX,e.clientY)}
@@ -1221,15 +1146,13 @@ export default function App() {
             onTouchMove={e=>{e.preventDefault();handleMove(e.touches[0].clientX,e.touches[0].clientY);}}
             onTouchEnd={e=>{e.preventDefault();handleUp();}}
             style={{display:"block",width:"100%",height:"100%"}}/>
-
           <div style={{position:"absolute",bottom:12,left:12,background:darkMode?"rgba(7,11,18,0.88)":"rgba(255,255,255,0.92)",backdropFilter:"blur(8px)",border:`1px solid ${theme.border}`,borderRadius:7,padding:"4px 12px",fontSize:10,fontFamily:"monospace",color:status.color}}>
             {status.msg}
           </div>
           <div style={{position:"absolute",bottom:12,right:12,fontSize:9,color:theme.label,fontFamily:"monospace"}}>x,y ∈ [−1, 1]</div>
-
-          {maxFeaturesUsed>0&&!featurePickMode&&(
+          {numExtraFeatures>0&&(
             <div style={{position:"absolute",top:10,right:12,background:"rgba(245,166,35,0.1)",border:"1px solid rgba(245,166,35,0.3)",borderRadius:6,padding:"3px 10px",fontSize:9,fontFamily:"monospace",color:"#f5a623"}}>
-              ◆ {maxFeaturesUsed} extra feature{maxFeaturesUsed>1?"s":""} per cluster
+              ◆ {numExtraFeatures + 2} features · grid {GRID_SIZE}×{GRID_SIZE}
             </div>
           )}
         </div>
