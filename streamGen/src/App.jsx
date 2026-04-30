@@ -287,12 +287,12 @@ function makeARFF(pointClass, trajs, numExtraFeatures, trainPct) {
 }
 
 // ─── Metadados TXT ────────────────────────────────────────────────────────────
-function makeMetaTXT(trajs, driftTicks, numExtraFeatures, trainPct) {
+function makeMetaTXT(trajs, driftTicks, numExtraFeatures, trainPct, labelMode) {
   const lines = [];
   lines.push("=== StreamGen Dataset Metadata ===");
   lines.push("");
   lines.push(`Generated: ${new Date().toISOString()}`);
-  lines.push(`Label mode: ${trajs.length > 0 ? "see class columns" : "unknown"}`);
+  lines.push(`Label mode: ${labelMode === 'multilabel' ? 'Multi-label' : 'Multiclass'}`);
   lines.push(`Total clusters: ${trajs.length}`);
   lines.push(`Extra features: ${numExtraFeatures} (f3…f${numExtraFeatures+2})`);
   lines.push(`Train split: ${trainPct}%`);
@@ -385,6 +385,7 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const [tick,        setTick]        = useState(null);
   const [precomp,     setPrecomp]     = useState(null);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(null); 
   const [status,      setStatus]      = useState({msg:"Ready.",color:"#6b7280"});
   const [showHelp,    setShowHelp]    = useState(false);
   const [darkMode,    setDarkMode]    = useState(true);
@@ -402,6 +403,15 @@ export default function App() {
   useEffect(()=>{ currentPathRef.current      = currentPath;      },[currentPath]);
   useEffect(()=>{ currentColorRef.current     = currentColor;     },[currentColor]);
   useEffect(()=>{ drawingRef.current          = drawing;          },[drawing]);
+  useEffect(()=>{
+    if(!downloadMenuOpen) return;
+    const close = (e)=>{
+      // Só fecha se o clique foi fora de um elemento com data-download-menu
+      if(!e.target.closest('[data-download-menu]')) setDownloadMenuOpen(null);
+    };
+    document.addEventListener('mousedown', close);
+    return ()=>document.removeEventListener('mousedown', close);
+  },[downloadMenuOpen]);
 
   const c2w = useCallback((canvas,ex,ey)=>{
     const r=canvas.getBoundingClientRect();
@@ -435,37 +445,6 @@ export default function App() {
     ctx.strokeStyle=th.axisY;
     ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();
 
-    // ── Centroides de features dos clusters finalizados ────────────────────
-    for(let ti=0;ti<trajRef.current.length;ti++){
-      const traj=trajRef.current[ti];
-      (traj.featureCentroids||[]).forEach((fc,fi)=>{
-        const p=w2c(canvas,fc.x,fc.y);
-        const fc_color=featureColor(fi);
-        // Linha tracejada até o cluster
-        const seg=traj.segments[0];
-        if(seg){
-          const ref=seg.type==='point'
-            ? w2c(canvas,seg.path[0].x,seg.path[0].y)
-            : w2c(canvas,seg.path[Math.floor(seg.path.length/2)].x,seg.path[Math.floor(seg.path.length/2)].y);
-          ctx.save();
-          ctx.strokeStyle=fc_color; ctx.globalAlpha=0.18; ctx.lineWidth=1;
-          ctx.setLineDash([3,5]);
-          ctx.beginPath();ctx.moveTo(p.px,p.py);ctx.lineTo(ref.px,ref.py);ctx.stroke();
-          ctx.setLineDash([]); ctx.restore();
-        }
-        // Diamante
-        ctx.save();
-        ctx.fillStyle=fc_color; ctx.globalAlpha=0.75;
-        ctx.beginPath();
-        ctx.moveTo(p.px,p.py-8);ctx.lineTo(p.px+6,p.py);
-        ctx.lineTo(p.px,p.py+8);ctx.lineTo(p.px-6,p.py);
-        ctx.closePath(); ctx.fill();
-        ctx.strokeStyle=dark?"rgba(255,255,255,0.6)":"rgba(0,0,0,0.25)"; ctx.lineWidth=1; ctx.stroke();
-        ctx.fillStyle=fc_color; ctx.globalAlpha=1; ctx.font="bold 9px monospace";
-        ctx.fillText(`C${ti}·f${fi+3}`,p.px+9,p.py+3);
-        ctx.restore();
-      });
-    }
 
     // ── Trajetórias finalizadas ────────────────────────────────────────────
     for(const traj of trajRef.current){
@@ -767,9 +746,36 @@ export default function App() {
     setStatus({msg:`"${base}_train.arff" and "${base}_test.arff" downloaded!`,color:"#22c55e"});
   },[precomp, filename, numExtraFeatures, trainPct]);
 
+  const downloadCSVComplete = useCallback(()=>{
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, 100);
+    // Junta train e test (100% train = arquivo completo sem split)
+    const base = filename.endsWith(".csv")?filename.replace(".csv",""):filename;
+    const blob = new Blob([train],{type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=`${base}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    setStatus({msg:`"${base}.csv" downloaded!`,color:"#22c55e"});
+    setDownloadMenuOpen(null);
+  },[precomp, filename, numExtraFeatures]);
+
+const downloadARFFComplete = useCallback(()=>{
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const {train} = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, 100);
+    const base = filename.endsWith(".csv")?filename.replace(".csv",""):filename;
+    const blob = new Blob([train],{type:"text/plain"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=`${base}.arff`; a.click();
+    URL.revokeObjectURL(url);
+    setStatus({msg:`"${base}.arff" downloaded!`,color:"#22c55e"});
+    setDownloadMenuOpen(null);
+  },[precomp, filename, numExtraFeatures]);
+
   const downloadMeta = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const txt = makeMetaTXT(trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct);
+    const txt = makeMetaTXT(trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct, labelMode);
     const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
     const blob = new Blob([txt], {type:"text/plain"});
     const url = URL.createObjectURL(blob);
@@ -1184,11 +1190,87 @@ export default function App() {
           <button onClick={isAnimating?stopAnim:generate} style={{padding:"6px 16px",borderRadius:7,border:"none",background:isAnimating?"#7f1d1d":"#1d4ed8",color:isAnimating?"#fca5a5":"#bfdbfe",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7}}>
             {isAnimating?"⏹ Stop":"▶ Generate Stream"}
           </button>
-          <button onClick={downloadCSV} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ CSV</button>
+          {/* <button onClick={downloadCSV} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ CSV</button>
           <button onClick={downloadARFF} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ ARFF</button>
           <button onClick={downloadMeta} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ META</button>
-          <button onClick={downloadImage} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ PNG</button>
+           */}
 
+          {/* Download CSV dropdown */}
+          <div style={{position:"relative"}}>
+            <button
+              onClick={()=>setDownloadMenuOpen(m=>m==='csv'?null:'csv')}
+              style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,
+                background:downloadMenuOpen==='csv'?theme.cardBg:"transparent",
+                color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                display:"flex",alignItems:"center",gap:4}}>
+              ⬇ CSV ▾
+            </button>
+            {downloadMenuOpen==='csv'&&(
+              <div style={{position:"absolute",top:"100%",left:0,marginTop:4,
+                background:theme.sidebar,border:`1px solid ${theme.border}`,
+                borderRadius:7,overflow:"hidden",zIndex:100,minWidth:160,
+                boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}} data-download-menu>
+                <button onClick={downloadCSVComplete}
+                  style={{width:"100%",padding:"8px 14px",border:"none",background:"transparent",
+                    color:theme.textMuted,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                    textAlign:"left",display:"block"}}
+                  onMouseEnter={e=>e.target.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.target.style.background="transparent"}>
+                  Complete
+                </button>
+                <button onClick={()=>{downloadCSV();setDownloadMenuOpen(null);}}
+                  style={{width:"100%",padding:"8px 14px",border:"none",background:"transparent",
+                    color:theme.textMuted,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                    textAlign:"left",display:"block"}}
+                  onMouseEnter={e=>e.target.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.target.style.background="transparent"}>
+                  Train / Test Split ({trainPct}% / {100-trainPct}%)
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Download ARFF dropdown */}
+          <div style={{position:"relative"}}>
+            <button
+              onClick={()=>setDownloadMenuOpen(m=>m==='arff'?null:'arff')}
+              style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,
+                background:downloadMenuOpen==='arff'?theme.cardBg:"transparent",
+                color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                display:"flex",alignItems:"center",gap:4}}>
+              ⬇ ARFF ▾
+            </button>
+            {downloadMenuOpen==='arff'&&(
+              <div style={{position:"absolute",top:"100%",left:0,marginTop:4,
+                background:theme.sidebar,border:`1px solid ${theme.border}`,
+                borderRadius:7,overflow:"hidden",zIndex:100,minWidth:160,
+                boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}} data-download-menu>
+                <button onClick={downloadARFFComplete}
+                  style={{width:"100%",padding:"8px 14px",border:"none",background:"transparent",
+                    color:theme.textMuted,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                    textAlign:"left",display:"block"}}
+                  onMouseEnter={e=>e.target.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.target.style.background="transparent"}>
+                  Complete
+                </button>
+                <button onClick={()=>{downloadARFF();setDownloadMenuOpen(null);}}
+                  style={{width:"100%",padding:"8px 14px",border:"none",background:"transparent",
+                    color:theme.textMuted,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                    textAlign:"left",display:"block"}}
+                  onMouseEnter={e=>e.target.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.target.style.background="transparent"}>
+                  Train / Test Split ({trainPct}% / {100-trainPct}%)
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button onClick={downloadMeta} style={{padding:"6px 12px",borderRadius:7,
+            border:`1px solid ${theme.border}`,background:"transparent",
+            color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>
+            ⬇ META
+          </button>
+          <button onClick={downloadImage} style={{padding:"6px 12px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>⬇ PNG</button>
           <button onClick={()=>setDarkMode(d=>!d)} title="Alternar tema" style={{width:34,height:34,borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textMuted,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:16}}>
             {darkMode?"🌙":"☀️"}
           </button>
