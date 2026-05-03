@@ -302,20 +302,24 @@ function makeMetaTXT(trajs, driftTicks, numExtraFeatures, trainPct, labelMode) {
   trajs.forEach((traj, i) => {
     lines.push(`--- Cluster ${i} ---`);
     lines.push(`Color: ${traj.color}`);
-    lines.push(`Duration: ${traj.startTime} - ${traj.endTime}`);
+
+    const segStart = Math.min(...traj.segments.map(s => s.tStart));
+    const segEnd   = Math.max(...traj.segments.map(s => s.tEnd));
+    lines.push(`Duration: ${segStart} - ${segEnd}`);
     lines.push(`Segments: ${traj.segments.length}`);
 
     traj.segments.forEach((seg, si) => {
       lines.push(`  Segment ${si+1}: type=${seg.type} | t=${seg.tStart}→${seg.tEnd}`);
     });
 
-    // Drift info para este cluster
+    // Drift info filtrado pelo intervalo efetivo dos segmentos
     const clusterDriftTicks = [];
-    for(const t of driftTicks){
-      if(t >= traj.startTime && t <= traj.endTime)
-        clusterDriftTicks.push(t);
+    for (const t of driftTicks) {
+      const inSegment = traj.segments.some(s => t >= s.tStart && t <= s.tEnd);
+      if (inSegment) clusterDriftTicks.push(t);
     }
-    if(clusterDriftTicks.length > 0){
+
+    if (clusterDriftTicks.length > 0) {
       const driftStart = Math.min(...clusterDriftTicks);
       const driftEnd   = Math.max(...clusterDriftTicks);
       lines.push(`  Drift start: ${driftStart}`);
