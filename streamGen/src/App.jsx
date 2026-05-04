@@ -342,9 +342,9 @@ const makeTheme = (dark) => ({
   cardBg:    dark?"#e2e8f0":"#0d1a2e",
   cardBorder:dark?"#e2e8f0":"#0f1f35",
   text:      dark?"#1e293b":"#e2e8f0",
-  textMuted: dark?"#64748b":"#94a3b8",
-  textDim:   dark?"#94a3b8":"#64748b",
-  textFaint: dark?"#75787d":"#334155",
+  textMuted: dark?"#1c345a":"#94a3b8",
+  textDim:   dark?"#1c345a":"#64748b",
+  textFaint: dark?"#3c4149":"#334155",
   label:     dark?"#94a3b8":"#1e3a5f",
   axisX:     dark?"rgba(59,130,246,0.5)":"rgba(96,165,250,0.35)",
   axisY:     dark?"rgba(239,68,68,0.5)":"rgba(248,113,113,0.35)",
@@ -881,14 +881,14 @@ const downloadARFFComplete = useCallback(()=>{
       <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:7}}>{label}</div>
       <div style={{display:"flex",flexDirection:"column",gap:3}}>
         {opts.map(o=>(
-          <button key={o} onClick={()=>set(o)} style={{padding:"4px 10px",borderRadius:5,border:"1px solid",borderColor:val===o?"#3b82f6":theme.cardBorder,background:val===o?"rgba(59,130,246,0.12)":"transparent",color:val===o?"#93c5fd":theme.textDim,fontSize:11,cursor:"pointer",textAlign:"left",fontFamily:"monospace"}}>{o}</button>
+          <button key={o} onClick={()=>set(o)} style={{padding:"4px 10px",borderRadius:5,border:"1px solid",borderColor:val===o?"#17375b":theme.cardBorder,background:val===o?"rgba(59,130,246,0.12)":"transparent",color:val===o?"#17375b":theme.textDim,fontSize:11,cursor:"pointer",textAlign:"left",fontFamily:"monospace"}}>{o}</button>
         ))}
       </div>
     </div>
   );
 
   const IBtn=({onClick,title,children,accent,danger})=>(
-    <button onClick={onClick} title={title} style={{width:34,height:34,borderRadius:7,border:"1px solid",borderColor:danger?"#7f1d1d":accent?"#1d4ed8":theme.border,background:danger?"rgba(239,68,68,0.1)":accent?"rgba(59,130,246,0.15)":"rgba(255,255,255,0.02)",color:danger?"#fca5a5":accent?"#93c5fd":theme.textMuted,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:14,flexShrink:0}}>
+    <button onClick={onClick} title={title} style={{width:34,height:34,borderRadius:7,border:"1px solid",borderColor:danger?"#7f1d1d":accent?"#1d4ed8":theme.border,background:danger?"rgba(239,68,68,0.1)":accent?"rgba(59,130,246,0.15)":"rgba(255,255,255,0.02)",color:danger?"#fca5a5":accent?"#17375b":theme.textMuted,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:14,flexShrink:0}}>
       {children}
     </button>
   );
@@ -929,9 +929,9 @@ const downloadARFFComplete = useCallback(()=>{
           </div>
           {labelMode==='multilabel'&&(
             <div style={{marginTop:10,background:"rgba(168,85,247,0.05)",border:"1px solid rgba(168,85,247,0.15)",borderRadius:7,padding:"10px 10px 6px"}}>
-              <SliderInput l="Raio (N×σ)" min={1} max={6} step={0.1} v={mlRadius} set={setMlRadius} decimals={1} u="σ"/>
+              <SliderInput l="Radius (N×σ)" min={1} max={6} step={0.1} v={mlRadius} set={setMlRadius} decimals={1} u="σ"/>
               <div style={{fontSize:10,fontFamily:"monospace",color:"#c084fc",marginTop:-6,marginBottom:4}}>
-                raio = {(mlRadius*std).toFixed(4)} u
+                radius = {(mlRadius*std).toFixed(4)} u
               </div>
               <div style={{fontSize:9,color:theme.textFaint,lineHeight:1.5}}>
                 Points within the radius of another cluster receive both labels.
@@ -1000,7 +1000,7 @@ const downloadARFFComplete = useCallback(()=>{
                   </div>
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
                     <div style={{flex:1}}>
-                      <div style={{fontSize:9,color:isAdjusted?"#75787d":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
+                      <div style={{fontSize:9,color:isAdjusted?"#3c4149":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
                         t start{isAdjusted&&i===1?" (adjusted)":""}
                       </div>
                       <input type="number"
@@ -1009,13 +1009,13 @@ const downloadARFFComplete = useCallback(()=>{
                         readOnly={isAdjusted}
                         style={{width:"100%",background:isAdjusted?"rgba(251,191,36,0.06)":theme.inputBg,
                           border:`1px solid ${isAdjusted?"rgba(146,146,146,1)":theme.cardBorder}`,
-                          color:isAdjusted?"#75787d":theme.textMuted,
+                          color:isAdjusted?"#3c4149":theme.textMuted,
                           borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",
                           boxSizing:"border-box",cursor:isAdjusted?"default":"text"}}/>
                     </div>
                     <div style={{color:theme.textFaint,fontSize:10,marginTop:10}}>→</div>
                     <div style={{flex:1}}>
-                      <div style={{fontSize:9,color:isAdjusted?"#75787d":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
+                      <div style={{fontSize:9,color:isAdjusted?"#3c4149":theme.textFaint,fontFamily:"monospace",marginBottom:2}}>
                         t end{isAdjusted&&i===0?" (adjusted)":""}
                       </div>
                       <input type="number"
@@ -1024,7 +1024,7 @@ const downloadARFFComplete = useCallback(()=>{
                         readOnly={isAdjusted}
                         style={{width:"100%",background:isAdjusted?"rgba(251,191,36,0.06)":theme.inputBg,
                           border:`1px solid ${isAdjusted?"rgba(146,146,146,1)":theme.cardBorder}`,
-                          color:isAdjusted?"#75787d":theme.textMuted,
+                          color:isAdjusted?"#3c4149":theme.textMuted,
                           borderRadius:5,padding:"3px 6px",fontSize:11,fontFamily:"monospace",
                           boxSizing:"border-box",cursor:isAdjusted?"default":"text"}}/>
                     </div>
