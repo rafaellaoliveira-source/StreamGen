@@ -33,8 +33,13 @@ StreamGen allows researchers to generate synthetic multi-label and multiclass da
 ## Interface
 
 
-![StreamGen Home screen](streamGen\resources\images\StreamGenMarkedInterface.png "StreamGen Home screen")
-*Figure 1 — StreamGen home screen.*
+<!-- ![StreamGen Home screen](streamGen\resources\images\StreamGenMarkedInterface.png "StreamGen Home screen") -->
+<figure>
+    <center><figcaption>StreamGen home screen example</figcaption>
+    <img src="streamGen\resources\images\StreamGenMarkedInterface.png" alt="drawing" style="width:810px;"/> </center>
+</figure>
+
+<!-- *Figure 1 — StreamGen home screen.* -->
 
 - **(a)** Sidebar containing stream configuration parameters
 - **(b)** Toolbar with the main action buttons
@@ -51,6 +56,15 @@ your browser (no installation required).
 4. Draw the centroid trajectory on the canvas **(c)**.
 5. Click **Generate Stream** to animate and compute the dataset.
 6. Download the output files using the CSV, ARFF, or META buttons.
+
+<!-- ![til](streamGen\resources\images\streamgenIncrementalExample.gif) -->
+<figure>
+    <center><figcaption>StreamGen incremental stream generation example</figcaption>
+    <img src="streamGen\resources\images\streamgenIncrementalExample.gif"/> </center>
+</figure>
+
+
+
 
 ---
 
