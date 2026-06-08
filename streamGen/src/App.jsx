@@ -1,336 +1,22 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-// DensityModal uses useState from React (already imported above)
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
-const CLUSTER_COLORS = ["#e05c5c","#4e9af1","#4ec994","#f5a623","#b36fd6","#f06c9b","#00c9c9","#d4b44a"];
-const FEATURE_COLORS = ["#f5a623","#a78bfa","#34d399","#f472b6","#60a5fa","#fb923c","#a3e635","#e879f9","#67e8f9","#fde68a"];
-const GRID_SIZE = 100;
-const randomColor  = (idx) => CLUSTER_COLORS[idx % CLUSTER_COLORS.length];
-const featureColor = (fi)  => FEATURE_COLORS[fi  % FEATURE_COLORS.length];
-
-function boxMuller() {
-  let u=0,v=0;
-  while(u===0) u=Math.random();
-  while(v===0) v=Math.random();
-  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
-}
-function gaussianPoints(cx,cy,std,n) {
-  return Array.from({length:n},()=>({
-    x:Math.max(-1,Math.min(1,cx+boxMuller()*std)),
-    y:Math.max(-1,Math.min(1,cy+boxMuller()*std))
-  }));
-}
-function rbfPoints(cx,cy,s,n) {
-  return Array.from({length:n},()=>{
-    const r=Math.random()*s*2, t=Math.random()*2*Math.PI;
-    return {x:Math.max(-1,Math.min(1,cx+r*Math.cos(t))),y:Math.max(-1,Math.min(1,cy+r*Math.sin(t)))};
-  });
-}
-function getCentroid(path,progress) {
-  if(path.length===1) return path[0];
-  const idx=Math.min(Math.floor(progress*(path.length-1)),path.length-2);
-  const w=progress*(path.length-1)-idx;
-  return {x:path[idx].x*(1-w)+path[idx+1].x*w, y:path[idx].y*(1-w)+path[idx+1].y*w};
-}
-function getMoorePositions(n) {
-  const positions = [];
-  let border = 1;
-  while(positions.length < n) {
-    for(let i = -border; i <= border && positions.length < n; i++)
-      positions.push([i, border]);   // topo
-    for(let i = border-1; i >= -border && positions.length < n; i--)
-      positions.push([border, i]);   // direita
-    for(let i = border-1; i >= -border && positions.length < n; i--)
-      positions.push([i, -border]);  // base
-    for(let i = -border+1; i < border && positions.length < n; i++)
-      positions.push([-border, i]); // esquerda
-    border++;
-  }
-  return positions.slice(0, n);
-}
+// ─── Imports dos módulos separados ────────────────────────────────────────────
+import { CLUSTER_COLORS, FEATURE_COLORS, GRID_SIZE, randomColor, featureColor, makeTheme } from "./theme.js";
+import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
+import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
+import { makeCSV, shuffleByTick, splitEntries } from "./export/csv.js";
+import { makeARFF } from "./export/arff.js";
+import { makeMetaTXT } from "./export/meta.js";
+import { downloadImage as downloadImageFile } from "./export/image.js";
+import NumInput from "./components/NumInput.jsx";
+import SliderInput from "./components/SliderInput.jsx";
+import RadioUI from "./components/RadioUI.jsx";
+import IBtn from "./components/IBtn.jsx";
+import { generateHyperplane } from "./generators/hyperplane.js";
+import { generateSEA, SEA_THRESHOLDS } from "./generators/sea.js";
+import { HelpIcon } from "./components/Tooltip.jsx";
 
 
-// ─── Pré-cálculo ──────────────────────────────────────────────────────────────
-// numExtraFeatures: número global de features extras (mesmo para todos os clusters)
-function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep}) {
-  if (!trajs.length) return null;
-  const gStart = Math.min(...trajs.map(t => t.startTime));
-  const gEnd   = Math.max(...trajs.flatMap(t => t.segments.map(s => s.tEnd)));
-  const dataPerTick = {}, pointClass = {};
-  let gid = 0;
-
-  const driftTicks = new Set();
-    for (const traj of trajs) {
-      for (let i = 1; i < traj.segments.length; i++) {
-        const prev = traj.segments[i-1];
-        const curr = traj.segments[i];
-        if (curr.connected) continue;
-        if (curr.tStart <= prev.tEnd) {
-          for (let t = curr.tStart; t <= prev.tEnd; t++) driftTicks.add(t);
-        } else {
-          driftTicks.add(curr.tStart);
-        }
-      }
-      if (traj.segments.length === 1 && traj.segments[0].type === 'free' 
-          && traj.segments[0].path.length > 1) {
-        const seg = traj.segments[0];
-        for (let t = seg.tStart; t <= seg.tEnd; t++) driftTicks.add(t);
-      }
-      for (let i = 0; i < traj.segments.length - 1; i++) {
-        const segA = traj.segments[i];
-        const segB = traj.segments[i + 1];
-        if (segA.type === 'point' && segB.type === 'point' && segB.connected) {
-          for (let t = segA.tEnd; t <= segB.tStart; t++) driftTicks.add(t);
-        }
-      }
-    }
-
-  const gen = (cx,cy,n) => distType==="RandomRBF" ? rbfPoints(cx,cy,std,n) : gaussianPoints(cx,cy,std,n);
-  const MULTILABEL_COLOR = darkCanvas ? "#ffffff" : "#111111";
-  const moorePositions = getMoorePositions(numExtraFeatures);
-
-  for (let t = gStart; t <= gEnd; t++) {
-    const allCentroids = trajs.map((traj) => {
-      const activeSegs = traj.segments.filter(s => s.tStart <= t && t <= s.tEnd);
-
-      if (!activeSegs.length) {
-        for (let si = 0; si < traj.segments.length - 1; si++) {
-          const segA = traj.segments[si];
-          const segB = traj.segments[si + 1];
-          if (segA.type==='point' && segB.type==='point' && segB.connected
-              && segA.tEnd < t && t < segB.tStart) {
-            const alpha = (t - segA.tEnd) / Math.max(1, segB.tStart - segA.tEnd);
-            return {
-              main: {
-                x: segA.path[0].x*(1-alpha)+segB.path[0].x*alpha,
-                y: segA.path[0].y*(1-alpha)+segB.path[0].y*alpha,
-              }, secondary: null, alpha: 1
-            };
-          }
-        }
-        return null;
-      }
-
-      const getC = (seg) => {
-        if (seg.type==='point') return seg.path[0];
-        const prog = Math.max(0, Math.min(1, (t-seg.tStart)/Math.max(1, seg.tEnd-seg.tStart)));
-        return getCentroid(seg.path, prog);
-      };
-
-      if (activeSegs.length === 1) {
-        return {main: getC(activeSegs[0]), secondary: null, alpha: 1};
-      } else {
-        activeSegs.sort((a,b) => a.tStart-b.tStart);
-        const segA = activeSegs[0], segB = activeSegs[1];
-        if (segA.type==='point' && segB.type==='point' && segB.connected)
-          return {main: getC(segA), secondary: null, alpha: 1};
-        const zoneStart=segB.tStart, zoneEnd=segA.tEnd;
-        const alpha = Math.max(0,Math.min(1,(t-zoneStart)/Math.max(1,zoneEnd-zoneStart)));
-        return {main: getC(segA), secondary: getC(segB), alpha};
-      }
-    });
-
-    const pointsT = [], centroidsT = [];
-
-    for (let ti = 0; ti < trajs.length; ti++) {
-      const ac = allCentroids[ti];
-      if (!ac) continue;
-      centroidsT.push({x: ac.main.x, y: ac.main.y});
-
-      const densityRules = trajs[ti].densityRules || [];
-      const rule = densityRules.find(r => t >= r.tStart && t <= r.tEnd);
-      const clusterPts = rule ? rule.pts : pts;
-
-      const genWithExtras = (cx, cy, count) =>
-        gen(cx, cy, count).map(pt => {
-          const extras = moorePositions.map(([dx, dy]) => {
-            const fx = cx + dx * featureStep;
-            const fy = cy + dy * featureStep;
-            return Math.max(-1, Math.min(1, (fx + fy) / 2 + boxMuller() * std));
-          });
-          return {...pt, extras, srcTrajIdx: ti};
-        });
-
-      if (!ac.secondary) {
-        genWithExtras(ac.main.x, ac.main.y, clusterPts).forEach(pt => pointsT.push(pt));
-      } else {
-        const nB = Math.round(clusterPts*ac.alpha), nA = clusterPts-nB;
-        if (nA>0) genWithExtras(ac.main.x, ac.main.y, nA).forEach(pt => pointsT.push(pt));
-        if (nB>0) genWithExtras(ac.secondary.x, ac.secondary.y, nB).forEach(pt => pointsT.push(pt));
-      }
-    }
-
-    if (!pointsT.length) continue;
-
-    const numTrajs = trajs.length, radius = mlRadius*std;
-    const finalColors = [];
-    const otherCentroids = [];
-    for (let ti=0; ti<trajs.length; ti++) {
-      const ac = allCentroids[ti]; if(!ac) continue;
-      otherCentroids.push({x:ac.main.x, y:ac.main.y, trajIdx:ti});
-      if (ac.secondary) otherCentroids.push({x:ac.secondary.x, y:ac.secondary.y, trajIdx:ti});
-    }
-
-    for (let i=0; i<pointsT.length; i++) {
-      const {x:px,y:py,extras,srcTrajIdx} = pointsT[i];
-      const labels = new Array(numTrajs).fill(0);
-      labels[srcTrajIdx] = 1;
-      if (labelMode==='multilabel') {
-        for (const oc of otherCentroids) {
-          if (oc.trajIdx===srcTrajIdx) continue;
-          const dx=px-oc.x, dy=py-oc.y;
-          if (Math.sqrt(dx*dx+dy*dy)<=radius) labels[oc.trajIdx]=1;
-        }
-      }
-      const numLabels = labels.reduce((a,b)=>a+b,0);
-      finalColors.push(numLabels>1 ? MULTILABEL_COLOR : trajs[srcTrajIdx].color);
-      pointClass[gid++] = {x:px, y:py, extras:extras||[], t, labels};
-    }
-
-    dataPerTick[t] = {points:pointsT, colors:finalColors, centroids:centroidsT};
-  }
-
-  return {gStart, gEnd, dataPerTick, pointClass, driftTicks};
-}
-// ─── Helpers de shuffle e split ───────────────────────────────────────────────
-function shuffleByTick(pointClass) {
-  const byTick = {};
-  Object.entries(pointClass).forEach(([id, pt]) => {
-    if(!byTick[pt.t]) byTick[pt.t] = [];
-    byTick[pt.t].push([id, pt]);
-  });
-  return Object.keys(byTick)
-    .map(Number).sort((a,b) => a-b)
-    .flatMap(t => {
-      const group = byTick[t];
-      for(let i = group.length-1; i > 0; i--){
-        const j = Math.floor(Math.random() * (i+1));
-        [group[i], group[j]] = [group[j], group[i]];
-      }
-      return group;
-    });
-}
-
-function splitEntries(entries, trainPct) {
-  const n = Math.floor(entries.length * trainPct / 100);
-  return { train: entries.slice(0, n), test: entries.slice(n) };
-}
-
-// ─── CSV ──────────────────────────────────────────────────────────────────────
-function makeCSV(pointClass, trajs, numExtraFeatures, trainPct) {
-  const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
-  const header = [
-    "global_id","timestamp","f1","f2",
-    ...extraCols,
-    ...trajs.map((_,i)=>`class_${i}`)
-  ].join(",");
-
-  const toRow = ([id,{x,y,extras,t,labels}]) => {
-    const ev = Array.from({length:numExtraFeatures}, (_,i) =>
-      (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
-    );
-    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
-  };
-
-  const shuffled = shuffleByTick(pointClass);
-  const {train, test} = splitEntries(shuffled, trainPct);
-
-  return {
-    train: [header, ...train.map(toRow)].join("\n"),
-    test:  [header, ...test.map(toRow)].join("\n"),
-  };
-}
-
-// ─── ARFF ─────────────────────────────────────────────────────────────────────
-function makeARFF(pointClass, trajs, numExtraFeatures, trainPct) {
-  const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
-
-  const makeHeader = () => {
-    const lines = [];
-    lines.push("@relation stream_gen");
-    lines.push("");
-    lines.push("@attribute global_id NUMERIC");
-    lines.push("@attribute timestamp NUMERIC");
-    lines.push("@attribute f1 NUMERIC");
-    lines.push("@attribute f2 NUMERIC");
-    extraCols.forEach(col => lines.push(`@attribute ${col} NUMERIC`));
-    trajs.forEach((_, i) => lines.push(`@attribute class_${i} {0,1}`));
-    lines.push("");
-    lines.push("@data");
-    return lines;
-  };
-
-  const toRow = ([id,{x,y,extras,t,labels}]) => {
-    const ev = Array.from({length:numExtraFeatures}, (_,i) =>
-      (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
-    );
-    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
-  };
-
-  const shuffled = shuffleByTick(pointClass);
-  const {train, test} = splitEntries(shuffled, trainPct);
-
-  return {
-    train: [...makeHeader(), ...train.map(toRow)].join("\n"),
-    test:  [...makeHeader(), ...test.map(toRow)].join("\n"),
-  };
-}
-
-// ─── Metadados TXT ────────────────────────────────────────────────────────────
-function makeMetaTXT(trajs, driftTicks, numExtraFeatures, trainPct, labelMode) {
-  const lines = [];
-  lines.push("=== StreamGen Dataset Metadata ===");
-  lines.push("");
-  lines.push(`Generated: ${new Date().toISOString()}`);
-  lines.push(`Label mode: ${labelMode === 'multilabel' ? 'Multi-label' : 'Multiclass'}`);
-  lines.push(`Total clusters: ${trajs.length}`);
-  lines.push(`Extra features: ${numExtraFeatures} (f3…f${numExtraFeatures+2})`);
-  lines.push(`Train split: ${trainPct}%`);
-  lines.push(`Test split: ${100-trainPct}%`);
-  lines.push("");
-
-  trajs.forEach((traj, i) => {
-    lines.push(`--- Cluster ${i} ---`);
-    lines.push(`Color: ${traj.color}`);
-
-    const segStart = Math.min(...traj.segments.map(s => s.tStart));
-    const segEnd   = Math.max(...traj.segments.map(s => s.tEnd));
-    lines.push(`Duration: ${segStart} - ${segEnd}`);
-    lines.push(`Segments: ${traj.segments.length}`);
-
-    traj.segments.forEach((seg, si) => {
-      lines.push(`  Segment ${si+1}: type=${seg.type} | t=${seg.tStart}→${seg.tEnd}`);
-    });
-
-    // Drift info filtrado pelo intervalo efetivo dos segmentos
-    const clusterDriftTicks = [];
-    for (const t of driftTicks) {
-      const inSegment = traj.segments.some(s => t >= s.tStart && t <= s.tEnd);
-      if (inSegment) clusterDriftTicks.push(t);
-    }
-
-    if (clusterDriftTicks.length > 0) {
-      const driftStart = Math.min(...clusterDriftTicks);
-      const driftEnd   = Math.max(...clusterDriftTicks);
-      lines.push(`  Drift start: ${driftStart}`);
-      lines.push(`  Drift end:   ${driftEnd}`);
-      lines.push(`  Drift duration: ${driftEnd - driftStart + 1} ticks`);
-    } else {
-      lines.push(`  Drift: none detected`);
-    }
-
-    if (traj.densityRules?.length > 0) {
-      lines.push(`  Density rules:`);
-      traj.densityRules.forEach(r => {
-        lines.push(`    t=${r.tStart}→${r.tEnd}: ${r.pts} inst/tick`);
-      });
-    } else {
-      lines.push(`  Density: global default`);
-    }
-    lines.push("");
-  });
-
-  return lines.join("\n");
-}
 
 // ─── DensityModal ─────────────────────────────────────────────────────────────
 function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRemoveRule, onClose, onSave }) {
@@ -377,7 +63,7 @@ function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRe
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
           <div style={{width:10,height:10,borderRadius:"50%",background:traj.color,flexShrink:0}}/>
           <span style={{fontSize:13,fontWeight:700,color:theme.text}}>
-            Cluster {trajIdx} — Density Rules
+            Cluster {trajIdx} — Frequency Rules
           </span>
         </div>
 
@@ -453,28 +139,80 @@ function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRe
 }
 
 
-// ─── Tema ─────────────────────────────────────────────────────────────────────
-const makeTheme = (dark) => ({
-  bg:        dark?"#f1f5f9":"#070b12",
-  sidebar:   dark?"#ffffff":"#0a0f1e",
-  border:    dark?"#e2e8f0":"#0d1a2e",
-  cardBg:    dark?"#e2e8f0":"#0d1a2e",
-  cardBorder:dark?"#e2e8f0":"#0f1f35",
-  text:      dark?"#1e293b":"#e2e8f0",
-  textMuted: dark?"#1c345a":"#94a3b8",
-  textDim:   dark?"#1c345a":"#64748b",
-  texGen:    dark?"#408cdf":"#64748b",
-  bdGen:     dark?"#408cdf":"#64748b",
-  btnBd:     dark?"#e2e8f0":"#64748b", // buttons border
-  textFaint: dark?"#8892a1":"#525f71",
-  label:     dark?"#94a3b8":"#1e3a5f",
-  axisX:     dark?"rgba(59,130,246,0.5)":"rgba(96,165,250,0.35)",
-  axisY:     dark?"rgba(239,68,68,0.5)":"rgba(248,113,113,0.35)",
-  grid:      dark?"rgba(0,0,0,0.06)":"rgba(255,255,255,0.05)",
-  canvasBg:  dark?"#f8fafc":"#080c14",
-  inputBg:   dark?"#f1f5f9":"#0d1a2e",
-  toolbarBg: dark?"#ffffff":"#0a0f1e",
-});
+function FeatureConfigModal({ fi, trajs, transforms, onChange, onClose, theme }) {
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",
+      backdropFilter:"blur(6px)",display:"flex",alignItems:"center",
+      justifyContent:"center",zIndex:200}}
+      onClick={onClose}>
+      <div style={{background:theme.sidebar,border:`1px solid ${theme.border}`,
+        borderRadius:14,padding:24,maxWidth:380,width:"90%"}}
+        onClick={e=>e.stopPropagation()}>
+
+        <div style={{fontSize:13,fontWeight:700,color:theme.text,marginBottom:4}}>
+          f{fi+3} Configuration
+        </div>
+
+        {trajs.map((traj, ti) => {
+          const t = transforms[fi]?.[ti] ?? {factor:1, offset:0};
+          return (
+            <div key={ti} style={{marginBottom:12,padding:"10px 12px",
+              borderRadius:8,border:`1px solid ${theme.cardBorder}`,
+              background:theme.cardBg}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
+                <div style={{width:8,height:8,borderRadius:"50%",
+                  background:traj.color,flexShrink:0}}/>
+                <span style={{fontSize:10,color:theme.textMuted,
+                  fontFamily:"monospace"}}>C{ti}</span>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:9,color:theme.textFaint,
+                    fontFamily:"monospace",marginBottom:4}}>Factor <HelpIcon text="Scales the distance of this feature from the centroid. factor > 1 = farther, factor < 1 = closer, factor < 0 = opposite side." theme={theme}/></div>
+                  <input type="number" value={t.factor} step={0.1} min={-3} max={3}
+                     onChange={e=>{
+                      const v = parseFloat(e.target.value)||1;
+                      onChange(fi, ti, "factor", Math.max(-3, Math.min(3, v)));
+                    }}
+                    style={{width:"100%",background:theme.inputBg,
+                      border:`1px solid ${theme.cardBorder}`,
+                      color:theme.textMuted,borderRadius:5,
+                      padding:"4px 6px",fontSize:11,fontFamily:"monospace",
+                      boxSizing:"border-box"}}/>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:9,color:theme.textFaint,
+                    fontFamily:"monospace",marginBottom:4}}>Offset <HelpIcon text="Shifts the feature position. Range: [−0.5, 0.5]. Positive = right/up, Negative = left/down." theme={theme}/></div>
+                  <input type="number" value={t.offset} step={0.05}
+                     onChange={e=>{
+                      const v = parseFloat(e.target.value)||0;
+                      onChange(fi, ti, "offset", Math.max(-0.5, Math.min(0.5, v)));
+                    }}
+                    style={{width:"100%",background:theme.inputBg,
+                      border:`1px solid ${theme.cardBorder}`,
+                      color:theme.textMuted,borderRadius:5,
+                      padding:"4px 6px",fontSize:11,fontFamily:"monospace",
+                      boxSizing:"border-box"}}/>
+                </div>
+              </div>
+              <div style={{fontSize:9,color:theme.textFaint,
+                fontFamily:"monospace",marginTop:6}}>
+                f{fi+3} = value × {t.factor} + {t.offset}
+              </div>
+            </div>
+          );
+        })}
+
+        <button onClick={onClose}
+          style={{marginTop:8,width:"100%",padding:"7px",borderRadius:7,
+            border:`1px solid ${theme.border}`,background:"transparent",
+            color:theme.textDim,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function App() {
@@ -494,6 +232,7 @@ export default function App() {
   const [currentColor,    setCurrentColor]    = useState(null);
   const [trajectories,    setTrajectories]    = useState([]);
   const [featureStep, setFeatureStep] = useState(0.05);
+  
 
   const featureStepRef = useRef(0.05);
   useEffect(()=>{ featureStepRef.current = featureStep; }, [featureStep]);
@@ -502,9 +241,9 @@ export default function App() {
 
   // ── Features ────────────────────────────────────────────────────────────────
   const [numExtraFeatures,  setNumExtraFeatures]  = useState(0);
+
   const numExtraFeaturesRef = useRef(0);
   useEffect(()=>{ numExtraFeaturesRef.current = numExtraFeatures; }, [numExtraFeatures]);
-
 
   // Parâmetros
   const [std,         setStd]         = useState(0.05);
@@ -534,6 +273,8 @@ export default function App() {
   const [showHelp,    setShowHelp]    = useState(false);
   const [darkMode,    setDarkMode]    = useState(true);
   const [hoveredFeatureVal, setHoveredFeatureVal] = useState(null);
+  const [featureTransforms, setFeatureTransforms] = useState({});
+  const [featureConfigModal, setFeatureConfigModal] = useState(null);
   
  
 
@@ -565,23 +306,11 @@ export default function App() {
   useEffect(()=>{
     if(!downloadMenuOpen) return;
     const close = (e)=>{
-      // Só fecha se o clique foi fora de um elemento com data-download-menu
       if(!e.target.closest('[data-download-menu]')) setDownloadMenuOpen(null);
     };
     document.addEventListener('mousedown', close);
     return ()=>document.removeEventListener('mousedown', close);
   },[downloadMenuOpen]);
-  // useEffect(() => {
-  //   if(isLocked) return; // já tem clusters, grade já foi criada
-  //   if(numExtraFeatures === 0) { featureGridsRef.current = []; return; }
-  //   const GRID_RES = 100;
-  //   featureGridsRef.current = Array.from({length: numExtraFeatures}, () => {
-  //     const grid = [];
-  //     for(let i=0;i<GRID_RES;i++)
-  //       grid.push(Array.from({length:GRID_RES}, ()=> boxMuller()*std));
-  //     return grid;
-  //   });
-  // }, [numExtraFeatures, isLocked, std]);
 
   const isAnimatingRef = useRef(false);
   useEffect(()=>{ isAnimatingRef.current = isAnimating; },[isAnimating]);
@@ -618,7 +347,6 @@ export default function App() {
     const nExtraFeats = numExtraFeaturesRef.current;
 
 
-
     ctx.fillStyle=th.canvasBg; ctx.fillRect(0,0,W,H);
     ctx.strokeStyle=th.grid; ctx.lineWidth=1;
     for(let i=0;i<=10;i++){
@@ -631,7 +359,54 @@ export default function App() {
     ctx.strokeStyle=th.axisY;
     ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();
 
-    // ── Trajetórias finalizadas ────────────────────────────────────────────
+    // ── Auxiliary functions ───────────────────────────────────────────────
+    const drawFeaturePoint = (px, py, fpx, fpy, fc) => {
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(fpx, fpy);
+      ctx.strokeStyle = fc; ctx.lineWidth = 1; ctx.globalAlpha = 0.3;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(fpx, fpy, 6, 0, Math.PI*2);
+      ctx.fillStyle = fc; ctx.globalAlpha = 0.9; ctx.fill();
+      ctx.strokeStyle = dark ? "#ffffff" : "#1e293b";
+      ctx.lineWidth = 1.8; ctx.globalAlpha = 1; ctx.stroke();
+
+      if(dark){
+        ctx.beginPath();
+        ctx.arc(fpx, fpy, 9, 0, Math.PI*2);
+        ctx.strokeStyle = fc; ctx.lineWidth = 1; ctx.globalAlpha = 0.3;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    };
+
+    const drawFeatureLabel = (fpx, fpy, fi) => {
+      ctx.font = "bold 9px monospace";
+      ctx.fillStyle = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+      ctx.globalAlpha = 0.9;
+      ctx.textAlign = "center";
+      ctx.fillText(`f${fi+3}`, fpx, fpy - 10);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "left";
+    };
+
+    const drawFeaturesAround = (cx, cy, p) => {
+      const moorePositions = getMoorePositions(nExtraFeats);
+      selectedFeaturesRef.current.forEach(fi => {
+        if(fi >= moorePositions.length) return;
+        const [dx, dy] = moorePositions[fi];
+        const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+        const fx = cx + dx * fStep;
+        const fy = cy + dy * fStep;
+        const fp = w2c(canvas, fx, fy);
+        drawFeaturePoint(p.px, p.py, fp.px, fp.py, fc);
+        drawFeatureLabel(fp.px, fp.py, fi);
+      });
+    };
+
+    // ── Completed trajectories ────────────────────────────────────────────
     for(const traj of trajRef.current){
       for(let si=0;si<traj.segments.length;si++){
         const seg=traj.segments[si];
@@ -644,41 +419,6 @@ export default function App() {
           ctx.fillStyle=th.textMuted; ctx.font="10px monospace";
           ctx.fillText(`t:${seg.tStart}→${seg.tEnd}`,p.px+10,p.py-6);
 
-          // ── Anéis estáticos no ponto ──────────────────────────────────
-          if(!isAnimatingRef.current && selectedFeaturesRef.current.size > 0 && seg.featureVals?.length){
-            const featureArr = [...selectedFeaturesRef.current];
-            const total = featureArr.length;
-            featureArr.forEach((fi, idx) => {
-              const val = seg.featureVals[fi];
-              if(val == null) return;
-              const color = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-              const angle = (2 * Math.PI * idx / total) - Math.PI / 2;
-              const dist = 22 + Math.abs(val) * 10;
-              const lx = p.px + Math.cos(angle) * dist;
-              const ly = p.py + Math.sin(angle) * dist;
-              ctx.beginPath();
-              ctx.arc(p.px, p.py, 8 + Math.abs(val)*5, 0, Math.PI*2);
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 1.2;
-              ctx.globalAlpha = 0.4 + Math.abs(val)*0.4;
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.moveTo(p.px, p.py);
-              ctx.lineTo(lx, ly);
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 0.6;
-              ctx.globalAlpha = 0.3;
-              ctx.stroke();
-              ctx.font = "9px monospace";
-              ctx.fillStyle = color;
-              ctx.globalAlpha = 0.9;
-              ctx.textAlign = "center";
-              ctx.fillText(`f${fi+3}: ${val.toFixed(2)}`, lx, ly);
-            });
-            ctx.globalAlpha = 1;
-            ctx.textAlign = "left";
-          }
-
         } else {
           if(seg.path.length<2) continue;
           ctx.strokeStyle=traj.color; ctx.lineWidth=2.5; ctx.globalAlpha=0.8;
@@ -689,41 +429,6 @@ export default function App() {
           const s=w2c(canvas,seg.path[0].x,seg.path[0].y);
           ctx.fillStyle=traj.color; ctx.globalAlpha=1;
           ctx.beginPath();ctx.arc(s.px,s.py,4,0,Math.PI*2);ctx.fill();
-
-          // ── Anéis estáticos no início do free-draw ────────────────────
-          if(!isAnimatingRef.current && selectedFeaturesRef.current.size > 0 && seg.featureVals?.length){
-            const featureArr = [...selectedFeaturesRef.current];
-            const total = featureArr.length;
-            featureArr.forEach((fi, idx) => {
-              const val = seg.featureVals[fi];
-              if(val == null) return;
-              const color = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-              const angle = (2 * Math.PI * idx / total) - Math.PI / 2;
-              const dist = 22 + Math.abs(val) * 10;
-              const lx = s.px + Math.cos(angle) * dist;
-              const ly = s.py + Math.sin(angle) * dist;
-              ctx.beginPath();
-              ctx.arc(s.px, s.py, 8 + Math.abs(val)*5, 0, Math.PI*2);
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 1.2;
-              ctx.globalAlpha = 0.4 + Math.abs(val)*0.4;
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.moveTo(s.px, s.py);
-              ctx.lineTo(lx, ly);
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 0.6;
-              ctx.globalAlpha = 0.3;
-              ctx.stroke();
-              ctx.font = "9px monospace";
-              ctx.fillStyle = color;
-              ctx.globalAlpha = 0.9;
-              ctx.textAlign = "center";
-              ctx.fillText(`f${fi+3}: ${val.toFixed(2)}`, lx, ly);
-            });
-            ctx.globalAlpha = 1;
-            ctx.textAlign = "left";
-          }
         }
         ctx.globalAlpha=1;
       }
@@ -750,7 +455,7 @@ export default function App() {
     }
     
 
-    // ── Path em desenho ───────────────────────────────────────────────────
+    // ── Path in drawing ───────────────────────────────────────────────────
     if(isDrawing&&path.length>=2){
       ctx.strokeStyle=col||"#888"; ctx.lineWidth=3; ctx.globalAlpha=0.9;
       ctx.beginPath();
@@ -759,49 +464,34 @@ export default function App() {
       ctx.stroke(); ctx.globalAlpha=1;
     }
 
-    // ── Pontos animados ──────────────────────────────────────────────────
-    if(oP&&oC){
-      for(let i=0;i<oP.length;i++){
-        const p=w2c(canvas,oP[i].x,oP[i].y);
-        ctx.fillStyle=oC[i]; ctx.globalAlpha=0.75;
-        ctx.beginPath();ctx.arc(p.px,p.py,3,0,Math.PI*2);ctx.fill();
-      }
-      ctx.globalAlpha=1;
-    }
+    // ── Statis Extra Features ────────────────────────
+    if(!oCen && selectedFeaturesRef.current.size > 0){
+      const trajs = trajRef.current;
+      if(trajs.length > 0){
+        const moorePositions = getMoorePositions(nExtraFeats);
 
-    // ── Centroides animados ──────────────────────────────────────────────
-    if(oCen){
-      const moorePositions = getMoorePositions(nExtraFeats);
+        trajs.forEach((traj) => {
+          const seg = traj.segments[0];
+          if(!seg) return;
+          const c = seg.path[0];
+          const p = w2c(canvas, c.x, c.y);
 
-      for(let ti=0;ti<oCen.length;ti++){
-        const c=oCen[ti];
-        const p=w2c(canvas,c.x,c.y);
-        ctx.strokeStyle=dark?"#fff":"#1e293b"; ctx.lineWidth=2;
-        ctx.beginPath();ctx.moveTo(p.px-7,p.py-7);ctx.lineTo(p.px+7,p.py+7);
-        ctx.moveTo(p.px+7,p.py-7);ctx.lineTo(p.px-7,p.py+7);ctx.stroke();
-
-        const selFeats = selectedFeaturesRef.current;
-        if(selFeats.size > 0){
-          selFeats.forEach(fi => {
+          selectedFeaturesRef.current.forEach(fi => {
             if(fi >= moorePositions.length) return;
             const [dx, dy] = moorePositions[fi];
             const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-
-            // Posição do centroide desta feature no espaço x,y
             const fx = c.x + dx * fStep;
             const fy = c.y + dy * fStep;
             const fp = w2c(canvas, fx, fy);
 
-            // Linha do centroide até a feature
-            ctx.beginPath();
-            ctx.moveTo(p.px, p.py);
-            ctx.lineTo(fp.px, fp.py);
-            ctx.strokeStyle = fc;
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.3;
-            ctx.stroke();
+            // ctx.beginPath();
+            // ctx.moveTo(p.px, p.py);
+            // ctx.lineTo(fp.px, fp.py);
+            // ctx.strokeStyle = fc;
+            // ctx.lineWidth = 1;
+            // ctx.globalAlpha = 0.3;
+            // ctx.stroke();
 
-            // Ponto da feature
             ctx.beginPath();
             ctx.arc(fp.px, fp.py, 6, 0, Math.PI*2);
             ctx.fillStyle = fc;
@@ -821,7 +511,6 @@ export default function App() {
             }
             ctx.globalAlpha = 1;
 
-            // Label
             ctx.font = "bold 9px monospace";
             ctx.fillStyle = fc;
             ctx.globalAlpha = 0.9;
@@ -830,6 +519,31 @@ export default function App() {
             ctx.globalAlpha = 1;
             ctx.textAlign = "left";
           });
+        });
+      }
+    }
+
+    // ── Animated Poits ──────────────────────────────────────────────────
+    if(oP&&oC){
+      for(let i=0;i<oP.length;i++){
+        const p=w2c(canvas,oP[i].x,oP[i].y);
+        ctx.fillStyle=oC[i]; ctx.globalAlpha=0.75;
+        ctx.beginPath();ctx.arc(p.px,p.py,3,0,Math.PI*2);ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+
+    // ── Animated Centroids ──────────────────────────────────────────────
+    if(oCen){
+      for(let ti=0;ti<oCen.length;ti++){
+        const c=oCen[ti];
+        const p=w2c(canvas,c.x,c.y);
+        ctx.strokeStyle=dark?"#fff":"#1e293b"; ctx.lineWidth=2;
+        ctx.beginPath();ctx.moveTo(p.px-7,p.py-7);ctx.lineTo(p.px+7,p.py+7);
+        ctx.moveTo(p.px+7,p.py-7);ctx.lineTo(p.px-7,p.py+7);ctx.stroke();
+
+        if(selectedFeaturesRef.current.size > 0){
+          drawFeaturesAround(c.x, c.y, p);
         }
       }
     }
@@ -840,16 +554,17 @@ export default function App() {
       ctx.strokeRect(1,1,W-2,H-2);
     }
   },[w2c, selectedFeaturesRef, std, featureStepRef, numExtraFeaturesRef]);
-  
+
   useEffect(()=>{
-    if(precomp && tick !== null){
-      const d = precomp.dataPerTick[tick];
-      if(d) render(d.points, d.colors, d.centroids, precomp.driftTicks, tick);
+    if(precomp){
+      const currentTick = tickRef.current !== null ? tickRef.current : precomp.gStart;
+      const d = precomp.dataPerTick[currentTick];
+      if(d) render(d.points, d.colors, d.centroids, precomp.driftTicks, currentTick);
       else render();
     } else {
       render();
     }
-  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick]);
+  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick, isAnimating, featureTransforms]);
   
   const calcFeatureVals = useCallback((x, y) => {
     if(numExtraFeatures === 0) return [];
@@ -944,7 +659,6 @@ export default function App() {
       return {...s, featureVals};
     });
 
-    // Overlap simétrico: ponto de transição = meio da duração total do cluster
     if(overlapDur>0 && copies.length>=2){
       const mid = Math.round((startTime + endTime) / 2);
       const half = Math.round(overlapDur / 2);
@@ -1065,11 +779,11 @@ export default function App() {
     setStatus({msg:"Computing...",color:"#94a3b8"});
     const darkCanvas=themeRef.current.canvasBg==="#080c14";
     console.log('allT densityRules:', allT.map(t => t.densityRules));
-    const res = precomputeData(allT, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep});
+    const res = precomputeData(allT, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms});
     if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
     setPrecomp(res);setIsAnimating(true);tickRef.current=res.gStart;setTick(res.gStart);
     setStatus({msg:"Animating...",color:"#3b82f6"});
-  },[trajectories,currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures,featureStep]);
+  },[trajectories,currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures,featureStep,featureTransforms]);
 
 
   const precompRef=useRef(null),speedRef=useRef(50);
@@ -1152,8 +866,7 @@ const downloadARFFComplete = useCallback(()=>{
 
   const downloadMeta = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const txt = makeMetaTXT(trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct, labelMode);
-    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+    const txt = makeMetaTXT( trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct, labelMode, precomp.pointClass );    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
     const blob = new Blob([txt], {type:"text/plain"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1204,67 +917,11 @@ const downloadARFFComplete = useCallback(()=>{
           ? "#94a3b8"
           : "#60a5fa";
 
-  // ─── Sub-componentes UI ───────────────────────────────────────────────────
-
-  const NumInput = ({l, v, set, min=0, max=99999, integer=false, u=""}) => {
-    const [localVal, setLocalVal] = useState(String(v));
-
-    useEffect(()=>{ setLocalVal(String(v)); }, [v]);
-
-    const commit = (raw) => {
-      const parsed = integer ? parseInt(raw) : parseFloat(raw);
-      if(isNaN(parsed)) { setLocalVal(String(v)); return; }
-      const clamped = Math.max(min, Math.min(max, parsed));
-      set(clamped);
-      setLocalVal(String(clamped));
-    };
-
-    return (
-      <div style={{marginBottom:12}}>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-          <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.07em"}}>{l}</span>
-          {u && <span style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace"}}>{u}</span>}
-        </div>
-        <input
-          type="number" value={localVal} min={min} max={max} step={integer?1:"any"}
-          onChange={e => setLocalVal(e.target.value)}
-          onBlur={e => commit(e.target.value)}
-          onKeyDown={e => { if(e.key === 'Enter') commit(e.target.value); }}
-          style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
-            color:theme.textMuted,borderRadius:6,padding:"5px 8px",fontSize:12,
-            fontFamily:"monospace",boxSizing:"border-box"}}/>
-      </div>
-    );
-  };
-
-  const SliderInput = ({l, v, set, min, max, step, decimals=2, u=""}) => (
-    <div style={{marginBottom:12}}>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-        <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.07em"}}>{l}</span>
-        <span style={{fontSize:11,color:theme.textMuted,fontFamily:"monospace",fontWeight:600}}>{Number(v).toFixed(decimals)}{u}</span>
-      </div>
-      <input type="range" min={min} max={max} step={step} value={v}
-        onChange={e=>set(parseFloat(e.target.value))}
-        style={{width:"100%",accentColor:"#3b82f6",cursor:"pointer"}}/>
-    </div>
-  );
-
-  const RadioUI = ({label,opts,val,set})=>(
-    <div style={{marginBottom:18}}>
-      <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:7}}>{label}</div>
-      <div style={{display:"flex",flexDirection:"column",gap:3}}>
-        {opts.map(o=>(
-          <button key={o} onClick={()=>set(o)} style={{padding:"4px 10px",borderRadius:5,border:"1px solid",borderColor:val===o?"#17375b":theme.cardBorder,background:val===o?"rgba(59,130,246,0.12)":"transparent",color:val===o?theme.textDim:theme.textDim,fontSize:11,cursor:"pointer",textAlign:"left",fontFamily:"monospace"}}>{o}</button>
-        ))}
-      </div>
-    </div>
-  );
-
-  const IBtn=({onClick,title,children,accent,danger})=>(
-    <button onClick={onClick} title={title} style={{width:34,height:34,borderRadius:7,border:"1px solid",borderColor:danger?"#7f1d1d":accent?"#1d4ed8":theme.border,background:danger?"rgba(239,68,68,0.1)":accent?"rgba(59,130,246,0.15)":"rgba(255,255,255,0.02)",color:danger?"#fca5a5":accent?theme.textDim:theme.textMuted,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:14,flexShrink:0}}>
-      {children}
-    </button>
-  );
+  // ─── Sub-componentes UI (wrappers que passam theme) ──────────────────────────
+  const NI = useMemo(() => (props) => <NumInput {...props} theme={theme}/>, [theme]);
+  const SI = useMemo(() => (props) => <SliderInput {...props} theme={theme}/>, [theme]);
+  const RI = useMemo(() => (props) => <RadioUI {...props} theme={theme}/>, [theme]);
+  const IB = useMemo(() => (props) => <IBtn {...props} theme={theme}/>, [theme]);
 
   const SectionHeader = ({skey, label, badge}) => (
     <div onClick={() => toggleSection(skey)}
@@ -1316,13 +973,7 @@ const downloadARFFComplete = useCallback(()=>{
         {/* ── Sidebar ── */}
         <div style={{width:268,minWidth:"10%",background:theme.sidebar,borderRight:`1px solid ${theme.border}`,display:"flex",flexDirection:"column",padding:"12px 14px",overflowY:"auto"}}>
 
-          {/* Distribution */}
-          <div style={{marginBottom:8}}>
-            <SectionHeader skey="distribution" label="Distribution"/>
-            {openSections.distribution && (
-              <RadioUI label="" opts={["Gaussian","RandomRBF"]} val={distType} set={setDistType}/>
-            )}
-          </div>
+          
 
           {/* ── Stream Parameters button ── */}
           <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:10,marginTop:2,marginBottom:4}}>
@@ -1381,14 +1032,62 @@ const downloadARFFComplete = useCallback(()=>{
 
                   {/* Valor da feature no centroide atual */}
                   {(() => {
-                    if(!precomp || tick === null) return null;
-                    const d = precomp.dataPerTick[tick];
+                    // ── Static Feature Values ──────────────────────────────
+                    if(!precomp){
+                      if(!trajectories.length) return null;
+                      return (
+                        <div style={{marginTop:8,borderTop:`1px solid ${theme.border}`,paddingTop:8}}>
+                          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
+                            textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>
+                            Feature values (static)
+                          </div>
+                          {trajectories.map((traj, ti) => {
+                            const seg = traj.segments[0];
+                            if(!seg) return null;
+                            const c = seg.path[0];
+                            return (
+                              <div key={ti} style={{marginBottom:6}}>
+                                <div style={{fontSize:9,color:theme.textDim,fontFamily:"monospace",marginBottom:3}}>
+                                  C{ti} ({c.x.toFixed(2)}, {c.y.toFixed(2)})
+                                </div>
+                                {[...selectedFeatures].map(fi => {
+                                  const val = getFeatureValAtCentroid(c.x, c.y, fi);
+                                  const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+                                  return (
+                                    <div key={fi} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                                      <div style={{width:6,height:6,borderRadius:1,transform:"rotate(45deg)",
+                                        background:fc,flexShrink:0}}/>
+                                      <span style={{fontSize:9,fontFamily:"monospace",color:fc,fontWeight:700}}>
+                                        f{fi+3}:
+                                      </span>
+                                      <span style={{fontSize:9,fontFamily:"monospace",color:theme.textMuted}}>
+                                        {val !== null ? val.toFixed(4) : "—"}
+                                      </span>
+                                      <button onClick={(e)=>{ e.stopPropagation(); setFeatureConfigModal(fi); }}
+                                        style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
+                                          borderRadius:4,color:theme.textFaint,cursor:"pointer",
+                                          fontSize:9,padding:"1px 5px",fontFamily:"monospace"}}>
+                                        ⚙
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+
+                    // ── Modo animado/pós-geração ─────────────────────────────────────
+                    const currentTick = tick !== null ? tick : precomp.gStart;
+                    const d = precomp.dataPerTick[currentTick];
                     if(!d || !d.centroids?.length) return null;
                     return (
                       <div style={{marginTop:8,borderTop:`1px solid ${theme.border}`,paddingTop:8}}>
                         <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
                           textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>
-                          Feature values at t={tick}
+                          Feature values at t={currentTick}
                         </div>
                         {d.centroids.map((cen, ti) => (
                           <div key={ti} style={{marginBottom:6}}>
@@ -1405,9 +1104,15 @@ const downloadARFFComplete = useCallback(()=>{
                                   <span style={{fontSize:9,fontFamily:"monospace",color:fc,fontWeight:700}}>
                                     f{fi+3}:
                                   </span>
-                                  <span style={{fontSize:9,fontFamily:"monospace",color:theme.textMuted}}>
+                                  <span style={{fontSize:9,fontFamily:"monospace",color:theme.textMuted,flex:1}}>
                                     {val !== null ? val.toFixed(4) : "—"}
                                   </span>
+                                  <button onClick={()=>setFeatureConfigModal(fi)}
+                                    style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
+                                      borderRadius:4,color:theme.textFaint,cursor:"pointer",
+                                      fontSize:9,padding:"1px 5px",fontFamily:"monospace"}}>
+                                    ⚙
+                                  </button>
                                 </div>
                               );
                             })}
@@ -1494,29 +1199,29 @@ const downloadARFFComplete = useCallback(()=>{
                     const clampedOverlap = Math.min(overlapDur, maxOverlap);
                     return (
                       <div style={{background:"rgba(251,191,36,0.05)",border:"1px solid rgba(251,191,36,0.12)",borderRadius:7,padding:"10px 10px 6px",marginTop:4,marginBottom:8}}>
-                        <NumInput l="Transition Duration" v={clampedOverlap}
+                        <NI l="Transition Duration" v={clampedOverlap}
                           set={v => setOverlapDur(Math.min(v, maxOverlap))}
-                          min={0} max={maxOverlap} integer u=" t"/>
-                        {overlapIsTooShort && (
-                          <div style={{fontSize:9,fontFamily:"monospace",color:"#f87171",marginTop:2,marginBottom:4,padding:"4px 8px",borderRadius:5,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.2)"}}>
-                            ⚠ Overlap too short for gradual drift. Recommended: minimum {minRecommended}t ({Math.round(minRecommended/streamDuration*100)}% of the stream).
+                          min={0} max={maxOverlap} integer u=" t" help="Determine the duration of the change when there are disconnected segments."/> 
+                          {overlapIsTooShort && (
+                            <div style={{fontSize:9,fontFamily:"monospace",color:"#f87171",marginTop:2,marginBottom:4,padding:"4px 8px",borderRadius:5,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.2)"}}>
+                              ⚠ Overlap too short for gradual drift. Recommended: minimum {minRecommended}t ({Math.round(minRecommended/streamDuration*100)}% of the stream).
+                            </div>
+                          )}
+                          {clampedOverlap > 0 && (
+                            <div style={{fontSize:9,fontFamily:"monospace",color:"#fbbf24",marginTop:2,marginBottom:4,lineHeight:1.6}}>
+                              〰 Coexistence: t={coStart} → t={coEnd} ({clampedOverlap}t)
+                              <br/>
+                              <span style={{color:theme.textFaint}}>Transition point: t={mid} (midpoint)</span>
+                            </div>
+                          )}
+                          {maxOverlap > 0 && (
+                            <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:4}}>
+                              Maximum possible: {maxOverlap}t · Recommended minimum: {minRecommended}t
+                            </div>
+                          )}
+                          <div style={{fontSize:10,fontFamily:"monospace",color:typeColor,marginTop:2,marginBottom:4}}>
+                            {clampedOverlap===0 ? "⚡ Abrupt" : overlapIsTooShort ? "⚠ Too short for Gradual" : `〰 Gradual · ${clampedOverlap}t overlap`}
                           </div>
-                        )}
-                        {clampedOverlap > 0 && (
-                          <div style={{fontSize:9,fontFamily:"monospace",color:"#fbbf24",marginTop:2,marginBottom:4,lineHeight:1.6}}>
-                            〰 Coexistence: t={coStart} → t={coEnd} ({clampedOverlap}t)
-                            <br/>
-                            <span style={{color:theme.textFaint}}>Transition point: t={mid} (midpoint)</span>
-                          </div>
-                        )}
-                        {maxOverlap > 0 && (
-                          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:4}}>
-                            Maximum possible: {maxOverlap}t · Recommended minimum: {minRecommended}t
-                          </div>
-                        )}
-                        <div style={{fontSize:10,fontFamily:"monospace",color:typeColor,marginTop:2,marginBottom:4}}>
-                          {clampedOverlap===0 ? "⚡ Abrupt" : overlapIsTooShort ? "⚠ Too short for Gradual" : `〰 Gradual · ${clampedOverlap}t overlap`}
-                        </div>
                       </div>
                     );
                   })()}
@@ -1544,7 +1249,7 @@ const downloadARFFComplete = useCallback(()=>{
                     </span>
                     <button
                       onClick={()=>openDensityModal(i)}
-                      title="Density rules"
+                      title="Frequency rules"
                       style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
                         borderRadius:4,color:t.densityRules?.length>0?"#f5a623":theme.textFaint,
                         cursor:"pointer",fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
@@ -1601,10 +1306,10 @@ const downloadARFFComplete = useCallback(()=>{
               ))}
             </div>
             <div style={{width:1,height:20,background:theme.border,margin:"0 2px"}}/>
-            <IBtn onClick={finishCluster} title="Finish Cluster" accent>＋</IBtn>
-            <IBtn onClick={preview} title="Preview">◎</IBtn>
-            <IBtn onClick={undo} title="Undo">↩</IBtn>
-            <IBtn onClick={clearAll} title="Clear All" danger>✕</IBtn>
+            <IB onClick={finishCluster} title="Finish Cluster" accent>＋</IB>
+            <IB onClick={preview} title="Preview">◎</IB>
+            <IB onClick={undo} title="Undo">↩</IB>
+            <IB onClick={clearAll} title="Clear All" danger>✕</IB>
             <div style={{width:1,height:20,background:theme.border,margin:"0 2px"}}/>
             <button onClick={isAnimating?stopAnim:generate} style={{padding:"7px 16px",borderRadius:7,border:`1px solid ${theme.bdGen}`,background:isAnimating?"#7f1d1d":theme.bg,color:isAnimating?"#fca5a5":theme.texGen,fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:7}}>
               {isAnimating?"⏹ Stop":"▶ Generate Stream"}
@@ -1788,7 +1493,7 @@ const downloadARFFComplete = useCallback(()=>{
 
             <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
               textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Animation Speed</div>
-            <SliderInput l="" min={10} max={500} step={10} v={speed} set={setSpeed} decimals={0} u="ms/tick"/>
+            <SI l="" min={10} max={500} step={10} v={speed} set={setSpeed} decimals={0} u="ms/tick"/>
 
             <button onClick={()=>setShowSettings(false)}
               style={{marginTop:8,width:"100%",padding:"7px",borderRadius:7,
@@ -1865,10 +1570,12 @@ const downloadARFFComplete = useCallback(()=>{
                       textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,marginTop:4}}>
                       Distribution
                     </div>
-                    <RadioUI label="" opts={["Gaussian","RandomRBF"]} val={distType} set={setDistType}/>
+                    <RI label="" opts={["Gaussian","RandomRBF"]} val={distType} set={setDistType}/>
 
-                    <SliderInput l="Standard Deviation" min={0} max={0.5} step={0.005} v={std} set={setStd} decimals={3}/>
-                    <NumInput l="Instances per Centroid" v={pts} set={setPts} min={1} max={5000} integer/>
+                    <SI l="Standard Deviation" min={0} max={0.5} step={0.005} v={std} set={setStd} decimals={3}
+                      help="Controls the spread of generated instances around the centroid. Higher values = more dispersed points."/>
+
+                    <NI l="Instances per Centroid" v={pts} set={setPts} min={1} max={5000} integer/>
 
                     <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
                       textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8,marginTop:8}}>
@@ -1888,27 +1595,27 @@ const downloadARFFComplete = useCallback(()=>{
                     </div>
                     {labelMode==='multilabel'&&(
                       <div style={{background:"rgba(168,85,247,0.05)",border:"1px solid rgba(168,85,247,0.15)",borderRadius:7,padding:"10px 10px 6px",marginBottom:10}}>
-                        <SliderInput l="Radius (N×σ)" min={1} max={6} step={0.1} v={mlRadius} set={setMlRadius} decimals={1} u="σ"/>
+                        <SI l="Radius (N×σ)" min={1} max={6} step={0.1} v={mlRadius} set={setMlRadius} decimals={1} u="σ" help={`Defines the overlap radius between clusters in multi-label mode. \n\nHigher N → larger overlap zone → more multi-label instances.\nLower N → smaller overlap zone → fewer multi-label instances.`}/>
                         <div style={{fontSize:10,fontFamily:"monospace",color:"#c084fc",marginTop:-6,marginBottom:4}}>
                           radius = {(mlRadius*std).toFixed(4)} u
                         </div>
                       </div>
                     )}
 
-                    <NumInput l="Extra features" v={numExtraFeatures}
+                    <NI l="Extra features" v={numExtraFeatures}
                       set={setNumExtraFeatures} min={0} max={10} integer
-                      disabled={isLocked && !paramsUnlocked}/>
-                    {numExtraFeatures>0&&(
-                      <div style={{fontSize:9,color:"#f5a623",fontFamily:"monospace",marginTop:-8,marginBottom:10}}>
-                        f1, f2{Array.from({length:numExtraFeatures},(_,i)=>`, f${i+3}`).join("")}
-                      </div>
-                    )}
-                    {numExtraFeatures > 0 && (
-                      <SliderInput
-                        l="Feature Step"
-                        min={0.01} max={0.5} step={0.01}
-                        v={featureStep} set={setFeatureStep}
-                        decimals={2}/>
+                      disabled={isLocked && !paramsUnlocked}
+                       help="Number of additional feature dimensions generated around the centroid using Moore neighborhood positioning."/>
+                      {numExtraFeatures>0&&(
+                        <div style={{fontSize:9,color:"#f5a623",fontFamily:"monospace",marginTop:-8,marginBottom:10}}>
+                          f1, f2{Array.from({length:numExtraFeatures},(_,i)=>`, f${i+3}`).join("")}
+                        </div>
+                      )}
+                      {numExtraFeatures > 0 && (
+                        <SI l="Feature Step" min={0.01} max={0.5} step={0.01}
+                          v={featureStep} set={setFeatureStep} decimals={2}
+                           help="Distance between the main centroid and each extra feature position in the canvas space [-1, 1]."
+                        />
                     )}
 
                     <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
@@ -1931,7 +1638,9 @@ const downloadARFFComplete = useCallback(()=>{
                       textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>
                       Dataset Split
                     </div>
-                    <NumInput l="Train %" v={trainPct} set={setTrainPct} min={10} max={90} integer/>
+                    <NI l="Train %" v={trainPct} set={setTrainPct} min={10} max={90} integer
+                    help="Percentage of instances assigned to the training partition. The remaining go to test."/>
+                    
                     <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:5}}>Filename</div>
                     <input value={filename} onChange={e=>setFilename(e.target.value)}
                       style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
@@ -1976,6 +1685,23 @@ const downloadARFFComplete = useCallback(()=>{
             <button onClick={()=>setShowHelp(false)} style={{marginTop:16,width:"100%",padding:"7px",borderRadius:7,border:`1px solid ${theme.border}`,background:"transparent",color:theme.textDim,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>Close</button>
           </div>
         </div>
+      )}
+
+      {/* ── Feature Config Modal ── */}
+      {featureConfigModal !== null && (
+        <FeatureConfigModal
+          fi={featureConfigModal}
+          trajs={trajectories}
+          transforms={featureTransforms}
+          onChange={(fi, ti, field, val) => {
+            setFeatureTransforms(prev => ({
+              ...prev,
+              [fi]: { ...(prev[fi]??{}), [ti]: { ...(prev[fi]?.[ti]??{factor:1,offset:0}), [field]: val }}
+            }));
+          }}
+          onClose={()=>setFeatureConfigModal(null)}
+          theme={theme}
+        />
       )}
     </div>
   );
