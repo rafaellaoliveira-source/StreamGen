@@ -275,7 +275,10 @@ export default function App() {
   const [hoveredFeatureVal, setHoveredFeatureVal] = useState(null);
   const [featureTransforms, setFeatureTransforms] = useState({});
   const [featureConfigModal, setFeatureConfigModal] = useState(null);
-  
+  const [draggingFeature, setDraggingFeature] = useState(null);
+  const draggingFeatureRef = useRef(null);
+  const featureTransformsRef = useRef({});
+
  
 
   // ── Accordion state ──────────────────────────────────────────────
@@ -290,6 +293,10 @@ export default function App() {
   const [theme, setTheme] = useState(()=>makeTheme(true));
   useEffect(()=>{ const t=makeTheme(darkMode); setTheme(t); themeRef.current=t; },[darkMode]);
   useEffect(()=>{ trajRef.current=trajectories; },[trajectories]);
+  useEffect(()=>{ featureTransformsRef.current = featureTransforms; }, [featureTransforms]);
+  useEffect(()=>{ draggingFeatureRef.current = draggingFeature; }, [draggingFeature]);
+  
+
 
   const currentSegmentsRef  = useRef([]);
   const currentPathRef      = useRef([]);
@@ -331,6 +338,44 @@ export default function App() {
       return next;
     });
   };
+
+  const FEATURE_HIT_RADIUS = 12;
+
+  const findHitFeature = useCallback((ex, ey) => {
+    const canvas = canvasRef.current;
+    if(!canvas || selectedFeaturesRef.current.size === 0) return null;
+    const trajs = trajRef.current;
+    const moorePos = getMoorePositions(numExtraFeaturesRef.current);
+    const rect = canvas.getBoundingClientRect();
+    const px = ex - rect.left;
+    const py = ey - rect.top;
+
+    for(let ti = 0; ti < trajs.length; ti++){
+      const seg = trajs[ti].segments[0];
+      if(!seg) continue;
+      const c = seg.path[0];
+
+      for(const fi of selectedFeaturesRef.current){
+        if(fi >= moorePos.length) continue;
+        const [dx, dy] = moorePos[fi];
+        // Usa featureTransformsRef para posição atual — sempre atualizado
+        const t = featureTransformsRef.current?.[fi]?.[ti] ?? {factor:1, offsetX:0, offsetY:0};
+        const fx = Math.max(-1, Math.min(1,
+          c.x + dx * featureStepRef.current * t.factor + (t.offsetX ?? 0)
+        ));
+        const fy = Math.max(-1, Math.min(1,
+          c.y + dy * featureStepRef.current * t.factor + (t.offsetY ?? 0)
+        ));
+        const fp = {
+          px: ((fx+1)/2) * canvas.width,
+          py: ((1-fy)/2) * canvas.height
+        };
+        const dist = Math.sqrt((px-fp.px)**2 + (py-fp.py)**2);
+        if(dist <= FEATURE_HIT_RADIUS) return {fi, ti};
+      }
+    }
+    return null;
+  }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   const render = useCallback((oP=null,oC=null,oCen=null,driftTicks=null,currentT=null)=>{
@@ -392,14 +437,15 @@ export default function App() {
       ctx.textAlign = "left";
     };
 
-    const drawFeaturesAround = (cx, cy, p) => {
+    const drawFeaturesAround = (cx, cy, p, trajIdx=0) => {
       const moorePositions = getMoorePositions(nExtraFeats);
       selectedFeaturesRef.current.forEach(fi => {
         if(fi >= moorePositions.length) return;
         const [dx, dy] = moorePositions[fi];
         const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-        const fx = cx + dx * fStep;
-        const fy = cy + dy * fStep;
+        const t = featureTransformsRef.current?.[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
+        const fx = Math.max(-1, Math.min(1, cx + dx * fStep * t.factor + (t.offsetX ?? 0)));
+        const fy = Math.max(-1, Math.min(1, cy + dy * fStep * t.factor + (t.offsetY ?? 0)));
         const fp = w2c(canvas, fx, fy);
         drawFeaturePoint(p.px, p.py, fp.px, fp.py, fc);
         drawFeatureLabel(fp.px, fp.py, fi);
@@ -470,7 +516,7 @@ export default function App() {
       if(trajs.length > 0){
         const moorePositions = getMoorePositions(nExtraFeats);
 
-        trajs.forEach((traj) => {
+        trajs.forEach((traj, ti) => {  // ← adicionado ti
           const seg = traj.segments[0];
           if(!seg) return;
           const c = seg.path[0];
@@ -480,17 +526,12 @@ export default function App() {
             if(fi >= moorePositions.length) return;
             const [dx, dy] = moorePositions[fi];
             const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-            const fx = c.x + dx * fStep;
-            const fy = c.y + dy * fStep;
-            const fp = w2c(canvas, fx, fy);
 
-            // ctx.beginPath();
-            // ctx.moveTo(p.px, p.py);
-            // ctx.lineTo(fp.px, fp.py);
-            // ctx.strokeStyle = fc;
-            // ctx.lineWidth = 1;
-            // ctx.globalAlpha = 0.3;
-            // ctx.stroke();
+            // Aplica factor e offsetX/offsetY da transformação
+            const t = featureTransformsRef.current?.[fi]?.[ti] ?? {factor:1, offsetX:0, offsetY:0};
+            const fx = Math.max(-1, Math.min(1, c.x + dx * fStep * t.factor + (t.offsetX ?? 0)));
+            const fy = Math.max(-1, Math.min(1, c.y + dy * fStep * t.factor + (t.offsetY ?? 0)));
+            const fp = w2c(canvas, fx, fy);
 
             ctx.beginPath();
             ctx.arc(fp.px, fp.py, 6, 0, Math.PI*2);
@@ -576,48 +617,112 @@ export default function App() {
     });
   }, [numExtraFeatures, featureStep]);
 
-  const getFeatureValAtCentroid = useCallback((cx, cy, fi) => {
+  const getFeatureValAtCentroid = useCallback((cx, cy, fi, trajIdx=0) => {
     const positions = getMoorePositions(fi + 1);
     const [dx, dy] = positions[fi];
-    const fx = cx + dx * featureStep;
-    const fy = cy + dy * featureStep;
+    const t = featureTransforms[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
+    const fx = Math.max(-1, Math.min(1, cx + dx * featureStep * t.factor + (t.offsetX ?? 0)));
+    const fy = Math.max(-1, Math.min(1, cy + dy * featureStep * t.factor + (t.offsetY ?? 0)));
     return Math.max(-1, Math.min(1, (fx + fy) / 2));
-  }, [featureStep]);
+  }, [featureStep, featureTransforms]);
   
   // ─── Mouse / Touch ────────────────────────────────────────────────────────
-  const handleDown = useCallback((ex,ey)=>{
+  const handleDown = useCallback((ex, ey) => {
     if(isAnimating) return;
-    const canvas=canvasRef.current;
-    const pt=c2w(canvas,ex,ey);
+    const canvas = canvasRef.current;
 
-    const col=currentColor||randomColor(trajRef.current.length);
+    // Verifica se clicou em um ponto de feature
+    const hit = findHitFeature(ex, ey);
+    if(hit){
+      setDraggingFeature(hit);
+      draggingFeatureRef.current = hit;
+      return;
+    }
+
+    const pt = c2w(canvas, ex, ey);
+    const col = currentColor || randomColor(trajRef.current.length);
     setCurrentColor(col);
-    if(inputMode==='point'){
-      setCurrentSegments(prev=>{
-        const n=prev.length+1;
-        const total=endTime-startTime;
-        const slotSize=Math.floor(total/n);
-        const updated=prev.map((s,i)=>({...s,tStart:startTime+i*slotSize,tEnd:startTime+(i+1)*slotSize-1}));
-        const newSeg={type:'point',path:[pt],connected:false,tStart:startTime+(n-1)*slotSize,tEnd:endTime};
-        if(updated.length>0) updated[updated.length-1].tEnd=newSeg.tStart-1;
-        return [...updated,newSeg];
+    if(inputMode === 'point'){
+      setCurrentSegments(prev => {
+        const n = prev.length + 1;
+        const total = endTime - startTime;
+        const slotSize = Math.floor(total / n);
+        const updated = prev.map((s,i) => ({...s, tStart:startTime+i*slotSize, tEnd:startTime+(i+1)*slotSize-1}));
+        const newSeg = {type:'point', path:[pt], connected:false, tStart:startTime+(n-1)*slotSize, tEnd:endTime};
+        if(updated.length > 0) updated[updated.length-1].tEnd = newSeg.tStart - 1;
+        return [...updated, newSeg];
       });
-      setStatus({msg:`Point at (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)})`,color:"#94a3b8"});
+      setStatus({msg:`Point at (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)})`, color:"#94a3b8"});
     } else {
       setCurrentPath([pt]);
       setDrawing(true);
-      setStatus({msg:"Drawing...",color:"#94a3b8"});
+      setStatus({msg:"Drawing...", color:"#94a3b8"});
     }
-  },[isAnimating,c2w,currentColor,inputMode,startTime,endTime]);
+  }, [isAnimating, c2w, currentColor, inputMode, startTime, endTime, findHitFeature]);
 
-  const handleMove = useCallback((ex,ey)=>{
-    if(!drawing||inputMode!=='free') return;
-    const canvas=canvasRef.current;
-    setCurrentPath(p=>[...p,c2w(canvas,ex,ey)]);
-  },[drawing,inputMode,c2w]);
+  const handleMove = useCallback((ex, ey) => {
+    const canvas = canvasRef.current;
+    if(!canvas) return;
 
-  const handleUp = useCallback(()=>{
-    if(!drawingRef.current || inputMode!=='free') return;
+    // Se está arrastando uma feature
+    if(draggingFeatureRef.current !== null){
+      const {fi, ti} = draggingFeatureRef.current;
+      const trajs = trajRef.current;
+      const seg = trajs[ti]?.segments[0];
+      if(!seg) return;
+      const c = seg.path[0];
+      const newPos = c2w(canvas, ex, ey);
+      const moorePos = getMoorePositions(numExtraFeaturesRef.current);
+      if(fi >= moorePos.length) return;
+      const [dx, dy] = moorePos[fi];
+      const currentFactor = featureTransformsRef.current?.[fi]?.[ti]?.factor ?? 1;
+
+      // mater máximo ou não?
+      // const newOffsetX = Math.max(-0.5, Math.min(0.5,
+      //   Math.max(-1, Math.min(1, newPos.x)) - c.x - dx * featureStepRef.current * currentFactor
+      // ));
+      // const newOffsetY = Math.max(-0.5, Math.min(0.5,
+      //   Math.max(-1, Math.min(1, newPos.y)) - c.y - dy * featureStepRef.current * currentFactor
+      // ));
+
+      // setFeatureTransforms(prev => ({
+      //   ...prev,
+      //   [fi]: {
+      //     ...(prev[fi]??{}),
+      //     [ti]: { ...(prev[fi]?.[ti]??{factor:1, offsetX:0, offsetY:0}), offsetX: newOffsetX, offsetY: newOffsetY }
+      //   }
+      // }));
+
+      const newOffsetX = newPos.x - c.x - dx * featureStepRef.current * currentFactor;
+      const newOffsetY = newPos.y - c.y - dy * featureStepRef.current * currentFactor;
+
+      // Só clipa ao range do canvas, sem limitar o offset em si
+      setFeatureTransforms(prev => ({
+        ...prev,
+        [fi]: {
+          ...(prev[fi]??{}),
+          [ti]: { ...(prev[fi]?.[ti]??{factor:1, offsetX:0, offsetY:0}), offsetX: newOffsetX, offsetY: newOffsetY }
+        }
+      }));
+      return;
+    }
+
+    // Cursor hover sobre feature
+    const hit = findHitFeature(ex, ey);
+    canvas.style.cursor = hit ? "grab" : isAnimating ? "default" : "crosshair";
+
+    if(!drawing || inputMode !== 'free') return;
+    setCurrentPath(p => [...p, c2w(canvas, ex, ey)]);
+  }, [drawing, inputMode, c2w, findHitFeature, isAnimating]);
+
+  const handleUp = useCallback(() => {
+    // Termina drag de feature
+    if(draggingFeatureRef.current !== null){
+      setDraggingFeature(null);
+      draggingFeatureRef.current = null;
+      return;
+    }
+    if(!drawingRef.current || inputMode !== 'free') return;
     setDrawing(false);
     const p = currentPathRef.current;
     setCurrentPath([]);
@@ -628,15 +733,14 @@ export default function App() {
         const n = all.length;
         const total = endTime - startTime;
         const slotSize = Math.floor(total / n);
-        // Redistribui os tempos igualmente entre todos os segmentos
         return all.map((seg, i) => ({
           ...seg,
           tStart: startTime + i * slotSize,
-          tEnd: i === n - 1 ? endTime : startTime + (i + 1) * slotSize - 1
+          tEnd: i === n-1 ? endTime : startTime + (i+1) * slotSize - 1
         }));
       });
     }
-  },[inputMode, startTime, endTime]);
+  }, [inputMode, startTime, endTime]);
 
   const updateSegTime = useCallback((idx,field,val)=>{
     setCurrentSegments(prev=>prev.map((s,i)=>i===idx?{...s,[field]:parseInt(val)||0}:s));
@@ -1051,7 +1155,7 @@ const downloadARFFComplete = useCallback(()=>{
                                   C{ti} ({c.x.toFixed(2)}, {c.y.toFixed(2)})
                                 </div>
                                 {[...selectedFeatures].map(fi => {
-                                  const val = getFeatureValAtCentroid(c.x, c.y, fi);
+                                  const val = getFeatureValAtCentroid(c.x, c.y, fi, ti);
                                   const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
                                   return (
                                     <div key={fi} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
@@ -1095,7 +1199,7 @@ const downloadARFFComplete = useCallback(()=>{
                               C{ti} ({cen.x.toFixed(2)}, {cen.y.toFixed(2)})
                             </div>
                             {[...selectedFeatures].map(fi => {
-                              const val = getFeatureValAtCentroid(cen.x, cen.y, fi);
+                              const val = getFeatureValAtCentroid(cen.x, cen.y, fi, ti);
                               const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
                               return (
                                 <div key={fi} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
@@ -1335,7 +1439,7 @@ const downloadARFFComplete = useCallback(()=>{
           </div>
 
           {/* Canvas */}
-          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:isAnimating?"default":"crosshair"}}>
+          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:draggingFeature!==null?"grabbing":isAnimating?"default":"crosshair"}}>
             <canvas ref={canvasRef}
               onMouseDown={e=>handleDown(e.clientX,e.clientY)}
               onMouseMove={e=>handleMove(e.clientX,e.clientY)}
