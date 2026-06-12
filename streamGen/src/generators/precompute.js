@@ -24,7 +24,7 @@ export function getMoorePositions(n) {
   return positions.slice(0, n);
 }
 
-export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms={}}) {
+export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms={}, featureTrajectories={}, disconnectedFeatures=new Set()}) {
   if (!trajs.length) return null;
   const gStart = Math.min(...trajs.map(t => t.startTime));
   const gEnd   = Math.max(...trajs.flatMap(t => t.segments.map(s => s.tEnd)));
@@ -116,11 +116,25 @@ export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, 
       const genWithExtras = (cx, cy, count, trajIdx) =>
         gen(cx, cy, count).map(pt => {
           const extras = moorePositions.map(([dx, dy], fi) => {
-            const fx = cx + dx * featureStep;
-            const fy = cy + dy * featureStep;
+            const key = `${fi}-${trajIdx}`;
+            const isDisconnected = disconnectedFeatures.has(key);
+            const indepPath = featureTrajectories[key];
+
+            if(isDisconnected && indepPath?.length >= 2){
+              const tStart = trajs[trajIdx]?.startTime ?? gStart;
+              const tEnd   = trajs[trajIdx]?.endTime   ?? gEnd;
+              const prog = Math.max(0, Math.min(1,
+                (t - tStart) / Math.max(1, tEnd - tStart)
+              ));
+              const fc = getCentroid(indepPath, prog);
+              return Math.max(-1, Math.min(1, (fc.x + fc.y) / 2 + boxMuller() * std));
+            }
+
+            const tr = featureTransforms[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
+            const fx = cx + dx * featureStep * tr.factor + (tr.offsetX ?? 0);
+            const fy = cy + dy * featureStep * tr.factor + (tr.offsetY ?? 0);
             const raw = (fx + fy) / 2 + boxMuller() * std;
-            const t = featureTransforms[fi]?.[trajIdx] ?? {factor:1, offset:0};
-            return Math.max(-1, Math.min(1, raw * t.factor + t.offset));
+            return Math.max(-1, Math.min(1, raw));
           });
           return {...pt, extras, srcTrajIdx: trajIdx};
         });

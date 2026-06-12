@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
-// ─── Imports dos módulos separados ────────────────────────────────────────────
+// ─── Imports ────────────────────────────────────────────
 import { CLUSTER_COLORS, FEATURE_COLORS, GRID_SIZE, randomColor, featureColor, makeTheme } from "./theme.js";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
@@ -214,7 +214,7 @@ function FeatureConfigModal({ fi, trajs, transforms, onChange, onClose, theme })
   );
 }
 
-// ─── Componente principal ─────────────────────────────────────────────────────
+// ─── Main component ─────────────────────────────────────────────────────
 export default function App() {
   const canvasRef     = useRef(null);
   const containerRef  = useRef(null);
@@ -245,7 +245,7 @@ export default function App() {
   const numExtraFeaturesRef = useRef(0);
   useEffect(()=>{ numExtraFeaturesRef.current = numExtraFeatures; }, [numExtraFeatures]);
 
-  // Parâmetros
+  // Parameters
   const [std,         setStd]         = useState(0.05);
   const [pts,         setPts]         = useState(100);
   const [speed,       setSpeed]       = useState(50);
@@ -274,11 +274,22 @@ export default function App() {
   const [darkMode,    setDarkMode]    = useState(true);
   const [hoveredFeatureVal, setHoveredFeatureVal] = useState(null);
   const [featureTransforms, setFeatureTransforms] = useState({});
-  const [featureConfigModal, setFeatureConfigModal] = useState(null);
   const [draggingFeature, setDraggingFeature] = useState(null);
   const draggingFeatureRef = useRef(null);
+  const [featureMenu, setFeatureMenu] = useState(null);
+  const [disconnectedFeatures, setDisconnectedFeatures] = useState(new Set());
+  const disconnectedFeaturesRef = useRef(new Set());
+  const [featureTrajectories, setFeatureTrajectories] = useState({});
+  const featureTrajectoriesRef = useRef({});
+  const [featureConfigModal, setFeatureConfigModal] = useState(null);
+  const [drawingFeature, setDrawingFeature] = useState(null);
+  const drawingFeatureRef = useRef(null);
   const featureTransformsRef = useRef({});
-
+  const pendingHitRef = useRef(null);
+  const mouseDownTimeRef = useRef(null);
+  const mouseDownPosRef = useRef(null);
+  const DRAG_THRESHOLD = 5;
+  const CLICK_THRESHOLD = 200;
  
 
   // ── Accordion state ──────────────────────────────────────────────
@@ -295,7 +306,9 @@ export default function App() {
   useEffect(()=>{ trajRef.current=trajectories; },[trajectories]);
   useEffect(()=>{ featureTransformsRef.current = featureTransforms; }, [featureTransforms]);
   useEffect(()=>{ draggingFeatureRef.current = draggingFeature; }, [draggingFeature]);
-  
+  useEffect(()=>{ disconnectedFeaturesRef.current = disconnectedFeatures; }, [disconnectedFeatures]);
+  useEffect(()=>{ featureTrajectoriesRef.current = featureTrajectories; }, [featureTrajectories]);
+  useEffect(()=>{ drawingFeatureRef.current = drawingFeature; }, [drawingFeature]);
 
 
   const currentSegmentsRef  = useRef([]);
@@ -318,7 +331,12 @@ export default function App() {
     document.addEventListener('mousedown', close);
     return ()=>document.removeEventListener('mousedown', close);
   },[downloadMenuOpen]);
-
+  useEffect(()=>{
+    if(!featureMenu) return;
+    const close = ()=>setFeatureMenu(null);
+    document.addEventListener('mousedown', close);
+    return ()=>document.removeEventListener('mousedown', close);
+  },[featureMenu]);
   const isAnimatingRef = useRef(false);
   useEffect(()=>{ isAnimatingRef.current = isAnimating; },[isAnimating]);
 
@@ -358,7 +376,7 @@ export default function App() {
       for(const fi of selectedFeaturesRef.current){
         if(fi >= moorePos.length) continue;
         const [dx, dy] = moorePos[fi];
-        // Usa featureTransformsRef para posição atual — sempre atualizado
+        
         const t = featureTransformsRef.current?.[fi]?.[ti] ?? {factor:1, offsetX:0, offsetY:0};
         const fx = Math.max(-1, Math.min(1,
           c.x + dx * featureStepRef.current * t.factor + (t.offsetX ?? 0)
@@ -437,16 +455,51 @@ export default function App() {
       ctx.textAlign = "left";
     };
 
-    const drawFeaturesAround = (cx, cy, p, trajIdx=0) => {
+    const drawFeaturesAround = (cx, cy, p, trajIdx=0, currentT=null) => {
       const moorePositions = getMoorePositions(nExtraFeats);
       selectedFeaturesRef.current.forEach(fi => {
         if(fi >= moorePositions.length) return;
-        const [dx, dy] = moorePositions[fi];
         const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-        const t = featureTransformsRef.current?.[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
-        const fx = Math.max(-1, Math.min(1, cx + dx * fStep * t.factor + (t.offsetX ?? 0)));
-        const fy = Math.max(-1, Math.min(1, cy + dy * fStep * t.factor + (t.offsetY ?? 0)));
+        const key = `${fi}-${trajIdx}`;
+        const isDisconnected = disconnectedFeaturesRef.current.has(key);
+        const indepPath = featureTrajectoriesRef.current[key];
+
+        let fx, fy;
+        if(isDisconnected && indepPath?.length >= 2){
+          // independent trajectory
+          const trajs = trajRef.current;
+          const traj = trajs[trajIdx];
+          const tStart = traj?.startTime ?? 0;
+          const tEnd = traj?.endTime ?? 100;
+          const prog = currentT !== null
+            ? Math.max(0, Math.min(1, (currentT - tStart) / Math.max(1, tEnd - tStart)))
+            : 0;
+          const fc_pos = getCentroid(indepPath, prog);
+          fx = Math.max(-1, Math.min(1, fc_pos.x));
+          fy = Math.max(-1, Math.min(1, fc_pos.y));
+        } else {
+          const [dx, dy] = moorePositions[fi];
+          const t = featureTransformsRef.current?.[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
+          fx = Math.max(-1, Math.min(1, cx + dx * fStep * t.factor + (t.offsetX ?? 0)));
+          fy = Math.max(-1, Math.min(1, cy + dy * fStep * t.factor + (t.offsetY ?? 0)));
+        }
+
         const fp = w2c(canvas, fx, fy);
+
+        // Different icon
+        if(isDisconnected){
+          ctx.strokeStyle = fc;
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = 0.4;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(p.px, p.py);
+          ctx.lineTo(fp.px, fp.py);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
+
         drawFeaturePoint(p.px, p.py, fp.px, fp.py, fc);
         drawFeatureLabel(fp.px, fp.py, fi);
       });
@@ -510,13 +563,41 @@ export default function App() {
       ctx.stroke(); ctx.globalAlpha=1;
     }
 
+    // ── Independent feature trajectories ─────────────────────────────────
+    Object.entries(featureTrajectoriesRef.current).forEach(([key, path]) => {
+      if(!path || path.length < 2) return;
+      const fi = parseInt(key.split('-')[0]);
+      const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+      ctx.strokeStyle = fc;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      const p0 = w2c(canvas, path[0].x, path[0].y);
+      ctx.moveTo(p0.px, p0.py);
+      path.forEach(pt => {
+        const p = w2c(canvas, pt.x, pt.y);
+        ctx.lineTo(p.px, p.py);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      // starting point
+      ctx.beginPath();
+      ctx.arc(p0.px, p0.py, 4, 0, Math.PI*2);
+      ctx.fillStyle = fc;
+      ctx.globalAlpha = 0.8;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+
     // ── Statis Extra Features ────────────────────────
     if(!oCen && selectedFeaturesRef.current.size > 0){
       const trajs = trajRef.current;
       if(trajs.length > 0){
         const moorePositions = getMoorePositions(nExtraFeats);
 
-        trajs.forEach((traj, ti) => {  // ← adicionado ti
+        trajs.forEach((traj, ti) => {  
           const seg = traj.segments[0];
           if(!seg) return;
           const c = seg.path[0];
@@ -527,7 +608,6 @@ export default function App() {
             const [dx, dy] = moorePositions[fi];
             const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
 
-            // Aplica factor e offsetX/offsetY da transformação
             const t = featureTransformsRef.current?.[fi]?.[ti] ?? {factor:1, offsetX:0, offsetY:0};
             const fx = Math.max(-1, Math.min(1, c.x + dx * fStep * t.factor + (t.offsetX ?? 0)));
             const fy = Math.max(-1, Math.min(1, c.y + dy * fStep * t.factor + (t.offsetY ?? 0)));
@@ -584,7 +664,7 @@ export default function App() {
         ctx.moveTo(p.px+7,p.py-7);ctx.lineTo(p.px-7,p.py+7);ctx.stroke();
 
         if(selectedFeaturesRef.current.size > 0){
-          drawFeaturesAround(c.x, c.y, p);
+          drawFeaturesAround(c.x, c.y, p, ti, currentT);
         }
       }
     }
@@ -605,7 +685,7 @@ export default function App() {
     } else {
       render();
     }
-  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick, isAnimating, featureTransforms]);
+  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick, isAnimating, featureTransforms, featureTrajectories, disconnectedFeatures]);
   
   const calcFeatureVals = useCallback((x, y) => {
     if(numExtraFeatures === 0) return [];
@@ -631,17 +711,26 @@ export default function App() {
     if(isAnimating) return;
     const canvas = canvasRef.current;
 
-    // Verifica se clicou em um ponto de feature
     const hit = findHitFeature(ex, ey);
     if(hit){
-      setDraggingFeature(hit);
-      draggingFeatureRef.current = hit;
+      mouseDownTimeRef.current = Date.now();
+      mouseDownPosRef.current = {x: ex, y: ey};
+      pendingHitRef.current = hit;
       return;
     }
 
     const pt = c2w(canvas, ex, ey);
     const col = currentColor || randomColor(trajRef.current.length);
     setCurrentColor(col);
+
+    // If feature design mode
+    if(drawingFeatureRef.current !== null){
+      const key = `${drawingFeatureRef.current.fi}-${drawingFeatureRef.current.ti}`;
+      setFeatureTrajectories(prev => ({...prev, [key]: [pt]}));
+      featureTrajectoriesRef.current = {...featureTrajectoriesRef.current, [key]: [pt]};
+      return;
+    }
+
     if(inputMode === 'point'){
       setCurrentSegments(prev => {
         const n = prev.length + 1;
@@ -664,7 +753,40 @@ export default function App() {
     const canvas = canvasRef.current;
     if(!canvas) return;
 
-    // Se está arrastando uma feature
+    if(pendingHitRef.current !== null){
+      const dx = ex - mouseDownPosRef.current.x;
+      const dy = ey - mouseDownPosRef.current.y;
+      if(Math.sqrt(dx*dx+dy*dy) > DRAG_THRESHOLD){
+        const hit = pendingHitRef.current;
+        pendingHitRef.current = null;
+        const key = `${hit.fi}-${hit.ti}`;
+        if(disconnectedFeaturesRef.current.has(key)){
+          setDrawingFeature(hit);
+          drawingFeatureRef.current = hit;
+          const pt = c2w(canvas, ex, ey);
+          setFeatureTrajectories(prev => ({...prev, [key]: [pt]}));
+          featureTrajectoriesRef.current = {...featureTrajectoriesRef.current, [key]: [pt]};
+        } else {
+          setDraggingFeature(hit);
+          draggingFeatureRef.current = hit;
+        }
+      }
+      return;
+    }
+
+    // Independent feature path design
+    if(drawingFeatureRef.current !== null){
+      const key = `${drawingFeatureRef.current.fi}-${drawingFeatureRef.current.ti}`;
+      const pt = c2w(canvas, ex, ey);
+      setFeatureTrajectories(prev => ({...prev, [key]: [...(prev[key]??[]), pt]}));
+      featureTrajectoriesRef.current = {
+        ...featureTrajectoriesRef.current,
+        [key]: [...(featureTrajectoriesRef.current[key]??[]), pt]
+      };
+      return;
+    }
+
+    // Feature Drag
     if(draggingFeatureRef.current !== null){
       const {fi, ti} = draggingFeatureRef.current;
       const trajs = trajRef.current;
@@ -676,27 +798,8 @@ export default function App() {
       if(fi >= moorePos.length) return;
       const [dx, dy] = moorePos[fi];
       const currentFactor = featureTransformsRef.current?.[fi]?.[ti]?.factor ?? 1;
-
-      // mater máximo ou não?
-      // const newOffsetX = Math.max(-0.5, Math.min(0.5,
-      //   Math.max(-1, Math.min(1, newPos.x)) - c.x - dx * featureStepRef.current * currentFactor
-      // ));
-      // const newOffsetY = Math.max(-0.5, Math.min(0.5,
-      //   Math.max(-1, Math.min(1, newPos.y)) - c.y - dy * featureStepRef.current * currentFactor
-      // ));
-
-      // setFeatureTransforms(prev => ({
-      //   ...prev,
-      //   [fi]: {
-      //     ...(prev[fi]??{}),
-      //     [ti]: { ...(prev[fi]?.[ti]??{factor:1, offsetX:0, offsetY:0}), offsetX: newOffsetX, offsetY: newOffsetY }
-      //   }
-      // }));
-
       const newOffsetX = newPos.x - c.x - dx * featureStepRef.current * currentFactor;
       const newOffsetY = newPos.y - c.y - dy * featureStepRef.current * currentFactor;
-
-      // Só clipa ao range do canvas, sem limitar o offset em si
       setFeatureTransforms(prev => ({
         ...prev,
         [fi]: {
@@ -707,7 +810,7 @@ export default function App() {
       return;
     }
 
-    // Cursor hover sobre feature
+    // Cursor hover
     const hit = findHitFeature(ex, ey);
     canvas.style.cursor = hit ? "grab" : isAnimating ? "default" : "crosshair";
 
@@ -716,12 +819,47 @@ export default function App() {
   }, [drawing, inputMode, c2w, findHitFeature, isAnimating]);
 
   const handleUp = useCallback(() => {
-    // Termina drag de feature
+    // Click on feature — opens menu
+    if(pendingHitRef.current !== null){
+      const hit = pendingHitRef.current;
+      pendingHitRef.current = null;
+      const elapsed = Date.now() - mouseDownTimeRef.current;
+      if(elapsed < CLICK_THRESHOLD){
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const moorePos = getMoorePositions(numExtraFeaturesRef.current);
+        if(hit.fi >= moorePos.length) return;
+        const [dx, dy] = moorePos[hit.fi];
+        const trajs = trajRef.current;
+        const seg = trajs[hit.ti]?.segments[0];
+        if(!seg) return;
+        const c = seg.path[0];
+        const t = featureTransformsRef.current?.[hit.fi]?.[hit.ti] ?? {factor:1, offsetX:0, offsetY:0};
+        const fx = Math.max(-1, Math.min(1, c.x + dx * featureStepRef.current * t.factor + (t.offsetX??0)));
+        const fy = Math.max(-1, Math.min(1, c.y + dy * featureStepRef.current * t.factor + (t.offsetY??0)));
+        const fp = {
+          px: ((fx+1)/2) * canvasRef.current.width,
+          py: ((1-fy)/2) * canvasRef.current.height
+        };
+        setFeatureMenu({fi: hit.fi, ti: hit.ti, px: fp.px, py: fp.py});
+      }
+      return;
+    }
+
+    // End drag feature
     if(draggingFeatureRef.current !== null){
       setDraggingFeature(null);
       draggingFeatureRef.current = null;
       return;
     }
+
+    // End feature trajectory drawing
+    if(drawingFeatureRef.current !== null){
+      setDrawingFeature(null);
+      drawingFeatureRef.current = null;
+      return;
+    }
+
     if(!drawingRef.current || inputMode !== 'free') return;
     setDrawing(false);
     const p = currentPathRef.current;
@@ -766,9 +904,9 @@ export default function App() {
     if(overlapDur>0 && copies.length>=2){
       const mid = Math.round((startTime + endTime) / 2);
       const half = Math.round(overlapDur / 2);
-      // Segmento 1: termina em mid + half
+      // Segment 1: ends in mid + half
       copies[0] = {...copies[0], tStart: startTime, tEnd: mid + half};
-      // Segmento 2: começa em mid - half
+      // Segment 2: begins in mid-half
       copies[1] = {...copies[1], tStart: mid - half, tEnd: endTime};
     }
 
@@ -866,7 +1004,7 @@ export default function App() {
     if(pending.length&&startTime<endTime){
       const copies=pending.map(s=>({...s}));
 
-      // Overlap simétrico
+      // Symmetrical overlap
       if(overlapDur>0 && copies.length>=2){
         const mid = Math.round((startTime + endTime) / 2);
         const half = Math.round(overlapDur / 2);
@@ -883,7 +1021,15 @@ export default function App() {
     setStatus({msg:"Computing...",color:"#94a3b8"});
     const darkCanvas=themeRef.current.canvasBg==="#080c14";
     console.log('allT densityRules:', allT.map(t => t.densityRules));
-    const res = precomputeData(allT, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms});
+
+    const res = precomputeData(allT, {
+      std, pts, distType, labelMode, mlRadius,
+      numExtraFeatures, darkCanvas, featureStep,
+      featureTransforms,
+      featureTrajectories,
+      disconnectedFeatures
+    });
+
     if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
     setPrecomp(res);setIsAnimating(true);tickRef.current=res.gStart;setTick(res.gStart);
     setStatus({msg:"Animating...",color:"#3b82f6"});
@@ -912,19 +1058,19 @@ export default function App() {
   },[isAnimating,precomp]);
 
   const downloadCSV = useCallback(()=>{
-  if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-  const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
-  const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
+    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
 
-  [["train", train], ["test", test]].forEach(([suffix, content]) => {
-    const blob = new Blob([content], {type:"text/csv"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${base}_${suffix}.csv`; a.click();
-    URL.revokeObjectURL(url);
-  });
-  setStatus({msg:`"${base}_train.csv" and "${base}_test.csv" downloaded!`,color:"#22c55e"});
-},[precomp, filename, numExtraFeatures, trainPct]);
+    [["train", train], ["test", test]].forEach(([suffix, content]) => {
+      const blob = new Blob([content], {type:"text/csv"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${base}_${suffix}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    });
+    setStatus({msg:`"${base}_train.csv" and "${base}_test.csv" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, trainPct]);
 
   const downloadARFF = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
@@ -944,7 +1090,7 @@ export default function App() {
   const downloadCSVComplete = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
     const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, 100);
-    // Junta train e test (100% train = arquivo completo sem split)
+ 
     const base = filename.endsWith(".csv")?filename.replace(".csv",""):filename;
     const blob = new Blob([train],{type:"text/csv"});
     const url = URL.createObjectURL(blob);
@@ -1021,7 +1167,7 @@ const downloadARFFComplete = useCallback(()=>{
           ? "#94a3b8"
           : "#60a5fa";
 
-  // ─── Sub-componentes UI (wrappers que passam theme) ──────────────────────────
+  // ─── Sub-componentes UI ──────────────────────────
   const NI = useMemo(() => (props) => <NumInput {...props} theme={theme}/>, [theme]);
   const SI = useMemo(() => (props) => <SliderInput {...props} theme={theme}/>, [theme]);
   const RI = useMemo(() => (props) => <RadioUI {...props} theme={theme}/>, [theme]);
@@ -1049,7 +1195,7 @@ const downloadARFFComplete = useCallback(()=>{
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:theme.bg,fontFamily:"'Segoe UI',sans-serif",color:theme.text,overflow:"hidden"}}>
 
-      {/* ── Header fixo ── */}
+      {/* ── Fixed header ── */}
       <div style={{height:44,background:theme.toolbarBg,borderBottom:`1px solid ${theme.border}`,
         display:"flex",alignItems:"center",padding:"0 16px",gap:10,flexShrink:0,zIndex:10}}>
          <div style={{}}>
@@ -1127,14 +1273,35 @@ const downloadARFFComplete = useCallback(()=>{
               </div>
               {selectedFeatures.size > 0 && (
                 <>
-                  <button onClick={()=>{ setSelectedFeatures(new Set()); selectedFeaturesRef.current = new Set(); setHoveredFeatureVal(null); }}
-                    style={{marginTop:6,fontSize:9,fontFamily:"monospace",
-                      background:"transparent",border:"none",
-                      color:theme.textFaint,cursor:"pointer",padding:0}}>
-                    ✕ clear
-                  </button>
+                  <div style={{display:"flex",gap:6,marginTop:6,alignItems:"center"}}>
+                    <button onClick={()=>{
+                      setSelectedFeatures(new Set());
+                      selectedFeaturesRef.current = new Set();
+                      setHoveredFeatureVal(null);
+                    }}
+                      style={{fontSize:9,fontFamily:"monospace",background:"transparent",
+                        border:"none",color:theme.textFaint,cursor:"pointer",padding:0}}>
+                      ✕ clear slection
+                    </button>
+                    <span style={{color:theme.textFaint,fontSize:9}}>·</span>
+                    <button onClick={()=>{
+                      // Reset all features from all clusters.
+                      setFeatureTransforms({});
+                      featureTransformsRef.current = {};
+                      setFeatureTrajectories({});
+                      featureTrajectoriesRef.current = {};
+                      setDisconnectedFeatures(new Set());
+                      disconnectedFeaturesRef.current = new Set();
+                      setStatus({msg:"All features reset to original.", color:"#22c55e"});
+                    }}
+                      style={{fontSize:9,fontFamily:"monospace",background:"transparent",
+                        border:"none",color:theme.textFaint,cursor:"pointer",padding:0}}>
+                      ↺ reset all
+                    </button>
+                  </div>
+                  
 
-                  {/* Valor da feature no centroide atual */}
+                  {/* Feature value at the current centroid */}
                   {(() => {
                     // ── Static Feature Values ──────────────────────────────
                     if(!precomp){
@@ -1183,7 +1350,7 @@ const downloadARFFComplete = useCallback(()=>{
                       );
                     }
 
-                    // ── Modo animado/pós-geração ─────────────────────────────────────
+                    // ── Animated/Post-Generation Mode ─────────────────────────────────────
                     const currentTick = tick !== null ? tick : precomp.gStart;
                     const d = precomp.dataPerTick[currentTick];
                     if(!d || !d.centroids?.length) return null;
@@ -1339,7 +1506,7 @@ const downloadARFFComplete = useCallback(()=>{
             </div>
           )}
 
-          {/* ── Clusters finalizados ── */}
+          {/* ── Clusters completed ── */}
           {trajectories.length>0&&(
             <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:10,marginTop:14}}>
               <SectionHeader skey="clusters" label={`Clusters (${trajectories.length})`}/>
@@ -1433,13 +1600,13 @@ const downloadARFFComplete = useCallback(()=>{
             <div style={{fontFamily:"monospace",fontSize:12,fontWeight:700,color:isAnimating?"#60a5fa":theme.label,letterSpacing:"0.06em"}}>T: {tick??"-"}</div>
           </div>
 
-          {/* Barra de progresso */}
+          {/* Progress bar */}
           <div style={{height:2,background:theme.bg}}>
             <div style={{height:"100%",width:`${progress}%`,background:"#3b82f6",transition:"width 0.04s linear"}}/>
           </div>
 
           {/* Canvas */}
-          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:draggingFeature!==null?"grabbing":isAnimating?"default":"crosshair"}}>
+          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:drawingFeature!==null?"crosshair":draggingFeature!==null?"grabbing":isAnimating?"default":"crosshair"}}>
             <canvas ref={canvasRef}
               onMouseDown={e=>handleDown(e.clientX,e.clientY)}
               onMouseMove={e=>handleMove(e.clientX,e.clientY)}
@@ -1452,13 +1619,152 @@ const downloadARFFComplete = useCallback(()=>{
               {status.msg}
             </div>
             <div style={{position:"absolute",bottom:12,right:12,fontSize:9,color:theme.label,fontFamily:"monospace"}}>x,y ∈ [−1, 1]</div>
-            {numExtraFeatures>0&&(
-              <div style={{position:"absolute",top:10,right:12,background:"rgba(245,166,35,0.1)",border:"1px solid rgba(245,166,35,0.3)",borderRadius:6,padding:"3px 10px",fontSize:9,fontFamily:"monospace",color:"#f5a623"}}>
-                ◆ {numExtraFeatures + 2} features · grid {GRID_SIZE}×{GRID_SIZE}
+              {numExtraFeatures>0&&(
+                <div style={{position:"absolute",top:10,right:12,background:"rgba(245,166,35,0.1)",border:"1px solid rgba(245,166,35,0.3)",borderRadius:6,padding:"3px 10px",fontSize:9,fontFamily:"monospace",color:"#f5a623"}}>
+                  ◆ {numExtraFeatures + 2} features · grid {GRID_SIZE}×{GRID_SIZE}
+                </div>
+              )}
+            </div>
+            {/* Feature drawing banner */}
+            {drawingFeature !== null && (
+              <div style={{position:"absolute",top:12,left:"50%",transform:"translateX(-50%)",
+                background:"rgba(0,0,0,0.85)",backdropFilter:"blur(8px)",
+                border:`1px solid ${FEATURE_COLORS[drawingFeature.fi % FEATURE_COLORS.length]}`,
+                borderRadius:8,padding:"6px 16px",fontSize:10,fontFamily:"monospace",
+                color:FEATURE_COLORS[drawingFeature.fi % FEATURE_COLORS.length],
+                pointerEvents:"none",zIndex:10}}>
+                ✏ Drawing independent trajectory for f{drawingFeature.fi+3} · C{drawingFeature.ti}
+                {" — release to finish"}
+              </div>
+            )}
+
+            {/* Feature Menu */}
+            {featureMenu !== null && (
+              <div
+                onMouseDown={e=>e.stopPropagation()}
+                style={{
+                  position:"absolute",
+                  left: featureMenu.px + 10,
+                  top: featureMenu.py - 20,
+                  background:theme.sidebar,
+                  border:`1px solid ${FEATURE_COLORS[featureMenu.fi % FEATURE_COLORS.length]}`,
+                  borderRadius:8,padding:"4px",zIndex:50,
+                  display:"flex",flexDirection:"column",gap:3,
+                  boxShadow:"0 4px 16px rgba(0,0,0,0.4)",
+                  minWidth:140
+                }}>
+                <div style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace",
+                  padding:"3px 8px",borderBottom:`1px solid ${theme.border}`,marginBottom:2}}>
+                  f{featureMenu.fi+3} · C{featureMenu.ti}
+                </div>
+                <button
+                  onClick={()=>setFeatureMenu(null)}
+                  style={{padding:"5px 12px",borderRadius:5,border:"none",
+                    background:"transparent",color:theme.textMuted,
+                    fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}
+                  onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  ↔ Move (drag)
+                </button>
+                <button
+                  onClick={()=>{
+                    const key = `${featureMenu.fi}-${featureMenu.ti}`;
+                    const isDisconnected = disconnectedFeaturesRef.current.has(key);
+                    if(isDisconnected){
+                      // Reconnect
+                      setDisconnectedFeatures(prev => {
+                        const next = new Set(prev);
+                        next.delete(key);
+                        disconnectedFeaturesRef.current = next;
+                        return next;
+                      });
+                      setFeatureTrajectories(prev => {
+                        const next = {...prev};
+                        delete next[key];
+                        featureTrajectoriesRef.current = next;
+                        return next;
+                      });
+                    } else {
+                      // Disconnect
+                      setDisconnectedFeatures(prev => {
+                        const next = new Set(prev);
+                        next.add(key);
+                        disconnectedFeaturesRef.current = next;
+                        return next;
+                      });
+                    }
+                    setFeatureMenu(null);
+                  }}
+                  style={{padding:"5px 12px",borderRadius:5,border:"none",
+                    background:"transparent",fontSize:9,cursor:"pointer",
+                    fontFamily:"monospace",textAlign:"left",
+                    color:disconnectedFeatures.has(`${featureMenu.fi}-${featureMenu.ti}`)
+                      ?"#f5a623":theme.textMuted}}
+                  onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  {disconnectedFeatures.has(`${featureMenu.fi}-${featureMenu.ti}`)
+                    ? "⟳ Reconnect" : "⊘ Disconnect"}
+                </button>
+                {disconnectedFeatures.has(`${featureMenu.fi}-${featureMenu.ti}`) && (
+                  <button
+                    onClick={()=>{
+                      const key = `${featureMenu.fi}-${featureMenu.ti}`;
+                      setFeatureTrajectories(prev => {
+                        const next = {...prev};
+                        delete next[key];
+                        featureTrajectoriesRef.current = next;
+                        return next;
+                      });
+                      setFeatureMenu(null);
+                    }}
+                    style={{padding:"5px 12px",borderRadius:5,border:"none",
+                      background:"transparent",color:theme.textMuted,
+                      fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}
+                    onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    ✏ Clear trajectory
+                  </button>
+                )}
+                <button
+                  onClick={()=>{
+                    const {fi, ti} = featureMenu;
+                    const key = `${fi}-${ti}`;
+                    // Remove trajectory
+                    setFeatureTrajectories(prev => {
+                      const next = {...prev};
+                      delete next[key];
+                      featureTrajectoriesRef.current = next;
+                      return next;
+                    });
+                    // Reconnect
+                    setDisconnectedFeatures(prev => {
+                      const next = new Set(prev);
+                      next.delete(key);
+                      disconnectedFeaturesRef.current = next;
+                      return next;
+                    });
+                    // Reset transforms
+                    setFeatureTransforms(prev => {
+                      const next = {...prev};
+                      if(next[fi]?.[ti]){
+                        next[fi] = {...next[fi]};
+                        next[fi][ti] = {factor:1, offsetX:0, offsetY:0};
+                      }
+                      featureTransformsRef.current = next;
+                      return next;
+                    });
+                    setFeatureMenu(null);
+                  }}
+                  style={{padding:"5px 12px",borderRadius:5,border:"none",
+                    background:"transparent",color:"#f87171",
+                    fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}
+                  onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  ↺ Reset to original
+                </button>
               </div>
             )}
           </div>
-        </div>
 
       </div>{/* ── End Body ── */}
 
