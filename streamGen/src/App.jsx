@@ -4,8 +4,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { CLUSTER_COLORS, FEATURE_COLORS, GRID_SIZE, randomColor, featureColor, makeTheme } from "./theme.js";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
-import { makeCSV, shuffleByTick, splitEntries } from "./export/csv.js";
-import { makeARFF } from "./export/arff.js";
+import { makeCSV, splitCSV,shuffleByTick, splitEntries } from "./export/csv.js";
+import { makeARFF, splitARFF } from "./export/arff.js";
 import { makeMetaTXT } from "./export/meta.js";
 import { downloadImage as downloadImageFile } from "./export/image.js";
 import NumInput from "./components/NumInput.jsx";
@@ -1057,62 +1057,49 @@ export default function App() {
     return ()=>clearTimeout(animRef.current);
   },[isAnimating,precomp]);
 
-  const downloadCSV = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
-    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+  const triggerDownload = useCallback((content, fname, type) => {
+    const blob = new Blob([content], {type});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fname; a.click();
+    URL.revokeObjectURL(url);
+  }, []);
 
-    [["train", train], ["test", test]].forEach(([suffix, content]) => {
-      const blob = new Blob([content], {type:"text/csv"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${base}_${suffix}.csv`; a.click();
-      URL.revokeObjectURL(url);
-    });
-    setStatus({msg:`"${base}_train.csv" and "${base}_test.csv" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, trainPct]);
-
-  const downloadARFF = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const {train, test} = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, trainPct);
-    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
-
-    [["train", train], ["test", test]].forEach(([suffix, content]) => {
-      const blob = new Blob([content], {type:"text/plain"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${base}_${suffix}.arff`; a.click();
-      URL.revokeObjectURL(url);
-    });
-    setStatus({msg:`"${base}_train.arff" and "${base}_test.arff" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, trainPct]);
+  const base = useCallback(() =>
+    filename.endsWith(".csv") ? filename.replace(".csv","") : filename
+  , [filename]);
 
   const downloadCSVComplete = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const {train, test} = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, 100);
- 
-    const base = filename.endsWith(".csv")?filename.replace(".csv",""):filename;
-    const blob = new Blob([train],{type:"text/csv"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href=url; a.download=`${base}.csv`; a.click();
-    URL.revokeObjectURL(url);
-    setStatus({msg:`"${base}.csv" downloaded!`,color:"#22c55e"});
-    setDownloadMenuOpen(null);
-  },[precomp, filename, numExtraFeatures]);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures);
+    triggerDownload(csv, `${base()}.csv`, "text/csv");
+    setStatus({msg:`"${base()}.csv" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, triggerDownload, base]);
 
-const downloadARFFComplete = useCallback(()=>{
+  const downloadCSV = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const {train} = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, 100);
-    const base = filename.endsWith(".csv")?filename.replace(".csv",""):filename;
-    const blob = new Blob([train],{type:"text/plain"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href=url; a.download=`${base}.arff`; a.click();
-    URL.revokeObjectURL(url);
-    setStatus({msg:`"${base}.arff" downloaded!`,color:"#22c55e"});
-    setDownloadMenuOpen(null);
-  },[precomp, filename, numExtraFeatures]);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const {train, test} = splitCSV(csv, trainPct);
+    triggerDownload(train, `${base()}_train.csv`, "text/csv");
+    triggerDownload(test,  `${base()}_test.csv`,  "text/csv");
+    setStatus({msg:`"${base()}_train/test.csv" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
+
+  const downloadARFFComplete = useCallback(()=>{
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures);
+    triggerDownload(arff, `${base()}.arff`, "text/plain");
+    setStatus({msg:`"${base()}.arff" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, triggerDownload, base]);
+
+  const downloadARFF = useCallback(()=>{
+    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const {train, test} = splitARFF(arff, trainPct);
+    triggerDownload(train, `${base()}_train.arff`, "text/plain");
+    triggerDownload(test,  `${base()}_test.arff`,  "text/plain");
+    setStatus({msg:`"${base()}_train/test.arff" downloaded!`,color:"#22c55e"});
+  },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
 
   const downloadMeta = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}

@@ -1,22 +1,18 @@
 import { shuffleByTick, splitEntries } from "./csv.js";
 
-export function makeARFF(pointClass, trajs, numExtraFeatures, trainPct) {
+export function makeARFF(pointClass, trajs, numExtraFeatures) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
 
-  const makeHeader = () => {
-    const lines = [];
-    lines.push("@relation stream_gen");
-    lines.push("");
-    lines.push("@attribute global_id NUMERIC");
-    lines.push("@attribute timestamp NUMERIC");
-    lines.push("@attribute f1 NUMERIC");
-    lines.push("@attribute f2 NUMERIC");
-    extraCols.forEach(col => lines.push(`@attribute ${col} NUMERIC`));
-    trajs.forEach((_, i) => lines.push(`@attribute class_${i} {0,1}`));
-    lines.push("");
-    lines.push("@data");
-    return lines;
-  };
+  const header = [
+    "@relation stream_gen", "",
+    "@attribute global_id NUMERIC",
+    "@attribute timestamp NUMERIC",
+    "@attribute f1 NUMERIC",
+    "@attribute f2 NUMERIC",
+    ...extraCols.map(col => `@attribute ${col} NUMERIC`),
+    ...trajs.map((_, i) => `@attribute class_${i} {0,1}`),
+    "", "@data"
+  ].join("\n");
 
   const toRow = ([id,{x,y,extras,t,labels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
@@ -26,11 +22,18 @@ export function makeARFF(pointClass, trajs, numExtraFeatures, trainPct) {
   };
 
   const shuffled = shuffleByTick(pointClass);
-  const {train, test} = splitEntries(shuffled, trainPct);
+  const rows = shuffled.map(toRow);
+  return header + "\n" + rows.join("\n");
+}
 
+export function splitARFF(arff, trainPct) {
+  const lines = arff.split("\n");
+  const dataIdx = lines.findIndex(l => l.trim().toLowerCase() === "@data");
+  const header = lines.slice(0, dataIdx + 1).join("\n");
+  const rows = lines.slice(dataIdx + 1).filter(r => r.trim());
+  const n = Math.floor(rows.length * trainPct / 100);
   return {
-    train:    [...makeHeader(), ...train.map(toRow)].join("\n"),
-    test:     [...makeHeader(), ...test.map(toRow)].join("\n"),
-    complete: [...makeHeader(), ...shuffled.map(toRow)].join("\n"),
+    train: header + "\n" + rows.slice(0, n).join("\n"),
+    test:  header + "\n" + rows.slice(n).join("\n"),
   };
 }

@@ -23,7 +23,7 @@ export function splitEntries(entries, trainPct) {
 }
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────
-export function makeCSV(pointClass, trajs, numExtraFeatures, trainPct) {
+export function makeCSV(pointClass, trajs, numExtraFeatures) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
   const header = [
     "global_id","timestamp","f1","f2",
@@ -39,11 +39,17 @@ export function makeCSV(pointClass, trajs, numExtraFeatures, trainPct) {
   };
 
   const shuffled = shuffleByTick(pointClass);
-  const {train, test} = splitEntries(shuffled, trainPct);
+  const rows = shuffled.map(toRow);
+  return [header, ...rows].join("\n");
+}
 
+export function splitCSV(csv, trainPct) {
+  const lines = csv.split("\n");
+  const header = lines[0];
+  const rows = lines.slice(1).filter(r => r.trim());
+  const n = Math.floor(rows.length * trainPct / 100);
   return {
-    train:    [header, ...train.map(toRow)].join("\n"),
-    test:     [header, ...test.map(toRow)].join("\n"),
-    complete: [header, ...shuffled.map(toRow)].join("\n"),
+    train: [header, ...rows.slice(0, n)].join("\n"),
+    test:  [header, ...rows.slice(n)].join("\n"),
   };
 }
