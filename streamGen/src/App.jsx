@@ -31,16 +31,13 @@ function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRe
     r.tStart < r.tEnd && r.pts >= 1;
 
   const addRule = () => {
-    console.log('addRule called, newRule:', newRule);
-    console.log('onAddRule type:', typeof onAddRule);
+   
     const r = {
       tStart: parseInt(newRule.tStart),
       tEnd: parseInt(newRule.tEnd),
       pts: parseInt(newRule.pts)
     };
-    console.log('parsed r:', r);
-    console.log('isValid:', isValidRule(r));
-    console.log('validIntervals:', validIntervals);
+  
     if(isNaN(r.tStart)||isNaN(r.tEnd)||isNaN(r.pts)){
       setRuleError('All fields are required.'); return;
     }
@@ -128,7 +125,7 @@ function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRe
               fontSize:11,fontFamily:"monospace"}}>
             Cancel
           </button>
-          <button onClick={() => { console.log('Save, rules prop:', rules); onSave(); }}
+          <button onClick={() => { onSave(); }}
             style={{flex:1,padding:"7px",borderRadius:7,border:"none",
               background:"rgba(59,130,246,0.2)",color:"#93c5fd",
               cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700}}>
@@ -1100,7 +1097,6 @@ export default function App() {
     if(!allT.length){setStatus({msg:"No cluster!",color:"#ef4444"});return;}
     setStatus({msg:"Computing...",color:"#94a3b8"});
     const darkCanvas=themeRef.current.canvasBg==="#080c14";
-    console.log('allT densityRules:', allT.map(t => t.densityRules));
 
     const res = precomputeData(allT, {
       std, pts, distType, labelMode, mlRadius,
