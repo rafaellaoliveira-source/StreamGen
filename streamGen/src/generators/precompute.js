@@ -1,4 +1,5 @@
 import { boxMuller, gaussianPoints, rbfPoints } from "./gaussian.js";
+import { getFeatureCentroidAtTick } from "./featureTrajectory.js";
 
 export function getCentroid(path, progress) {
   if(path.length===1) return path[0];
@@ -118,16 +119,11 @@ export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, 
           const extras = moorePositions.map(([dx, dy], fi) => {
             const key = `${fi}-${trajIdx}`;
             const isDisconnected = disconnectedFeatures.has(key);
-            const indepPath = featureTrajectories[key];
+            const trajData = featureTrajectories[key];
+            const indepPos = isDisconnected ? getFeatureCentroidAtTick(trajData, t) : null;
 
-            if(isDisconnected && indepPath?.length >= 2){
-              const tStart = trajs[trajIdx]?.startTime ?? gStart;
-              const tEnd   = trajs[trajIdx]?.endTime   ?? gEnd;
-              const prog = Math.max(0, Math.min(1,
-                (t - tStart) / Math.max(1, tEnd - tStart)
-              ));
-              const fc = getCentroid(indepPath, prog);
-              return Math.max(-1, Math.min(1, (fc.x + fc.y) / 2 + boxMuller() * std));
+            if(indepPos){
+              return Math.max(-1, Math.min(1, (indepPos.x + indepPos.y) / 2 + boxMuller() * std));
             }
 
             const tr = featureTransforms[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};

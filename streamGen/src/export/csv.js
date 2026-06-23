@@ -23,19 +23,27 @@ export function splitEntries(entries, trainPct) {
 }
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────
-export function makeCSV(pointClass, trajs, numExtraFeatures) {
+// ─── CSV ──────────────────────────────────────────────────────────────────────
+export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
+  const labelCols = labelMode === 'multilabel'
+    ? trajs.map((_,i)=>`class_${i}`)
+    : ["label"];
+
   const header = [
     "global_id","timestamp","f1","f2",
     ...extraCols,
-    ...trajs.map((_,i)=>`class_${i}`)
+    ...labelCols
   ].join(",");
 
   const toRow = ([id,{x,y,extras,t,labels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
+    const labelVals = labelMode === 'multilabel'
+      ? labels
+      : [labels.indexOf(1)];
+    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labelVals].join(",");
   };
 
   const shuffled = shuffleByTick(pointClass);

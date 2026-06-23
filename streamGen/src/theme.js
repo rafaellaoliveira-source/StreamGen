@@ -10,8 +10,6 @@ export const FEATURE_COLORS = [
   "#67e8f9","#fde68a"
 ];
 
-export const GRID_SIZE = 100;
-
 export const randomColor  = (idx) => CLUSTER_COLORS[idx % CLUSTER_COLORS.length];
 export const featureColor = (fi)  => FEATURE_COLORS[fi  % FEATURE_COLORS.length];
 

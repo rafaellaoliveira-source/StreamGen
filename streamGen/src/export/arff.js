@@ -1,7 +1,11 @@
 import { shuffleByTick, splitEntries } from "./csv.js";
 
-export function makeARFF(pointClass, trajs, numExtraFeatures) {
+export function makeARFF(pointClass, trajs, numExtraFeatures, labelMode) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
+
+  const labelAttrs = labelMode === 'multilabel'
+    ? trajs.map((_, i) => `@attribute class_${i} {0,1}`)
+    : [`@attribute label {${trajs.map((_,i)=>i).join(",")}}`];
 
   const header = [
     "@relation stream_gen", "",
@@ -10,7 +14,7 @@ export function makeARFF(pointClass, trajs, numExtraFeatures) {
     "@attribute f1 NUMERIC",
     "@attribute f2 NUMERIC",
     ...extraCols.map(col => `@attribute ${col} NUMERIC`),
-    ...trajs.map((_, i) => `@attribute class_${i} {0,1}`),
+    ...labelAttrs,
     "", "@data"
   ].join("\n");
 
@@ -18,7 +22,10 @@ export function makeARFF(pointClass, trajs, numExtraFeatures) {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labels].join(",");
+    const labelVals = labelMode === 'multilabel'
+      ? labels
+      : [labels.indexOf(1)];
+    return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labelVals].join(",");
   };
 
   const shuffled = shuffleByTick(pointClass);

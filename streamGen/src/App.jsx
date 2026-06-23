@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
 // ─── Imports ────────────────────────────────────────────
-import { CLUSTER_COLORS, FEATURE_COLORS, GRID_SIZE, randomColor, featureColor, makeTheme } from "./theme.js";
+import { CLUSTER_COLORS, FEATURE_COLORS, randomColor, featureColor, makeTheme } from "./theme.js";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
 import { makeCSV, splitCSV,shuffleByTick, splitEntries } from "./export/csv.js";
@@ -15,6 +15,8 @@ import IBtn from "./components/IBtn.jsx";
 import { generateHyperplane } from "./generators/hyperplane.js";
 import { generateSEA, SEA_THRESHOLDS } from "./generators/sea.js";
 import { HelpIcon } from "./components/Tooltip.jsx";
+import { getFeatureCentroidAtTick, addFeatureSegment, removeFeatureSegment, clearFeatureTrajectory } from "./generators/featureTrajectory.js";
+
 
 
 
@@ -63,7 +65,7 @@ function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRe
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
           <div style={{width:10,height:10,borderRadius:"50%",background:traj.color,flexShrink:0}}/>
           <span style={{fontSize:13,fontWeight:700,color:theme.text}}>
-            Cluster {trajIdx} — Frequency Rules
+            Cluster {trajIdx} — Frequency Rules <HelpIcon text={"Controls how many instances are generated per timestamp for this cluster, within a specific time interval. \n\n Overrides the global Instances per Centroid value for the selected range."} theme={theme}/>
           </span>
         </div>
 
@@ -288,6 +290,13 @@ export default function App() {
   const pendingHitRef = useRef(null);
   const mouseDownTimeRef = useRef(null);
   const mouseDownPosRef = useRef(null);
+  const lastDrawnFeatureRef = useRef(null);
+  const [activeFeatureDraw, setActiveFeatureDraw] = useState(null);
+  const activeFeatureDrawRef = useRef(null);
+  const currentFeatureStrokesRef = useRef([]); 
+  const currentFeatureStrokeRef = useRef([]); 
+  const isMouseDownRef = useRef(false);
+
   const DRAG_THRESHOLD = 5;
   const CLICK_THRESHOLD = 200;
  
@@ -423,31 +432,32 @@ export default function App() {
     ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();
 
     // ── Auxiliary functions ───────────────────────────────────────────────
-    const drawFeaturePoint = (px, py, fpx, fpy, fc) => {
+    const drawFeaturePoint = (px, py, fpx, fpy, fc, clusterColor) => {
+      // line
       ctx.beginPath();
       ctx.moveTo(px, py);
       ctx.lineTo(fpx, fpy);
-      ctx.strokeStyle = fc; ctx.lineWidth = 1; ctx.globalAlpha = 0.3;
+      ctx.strokeStyle = clusterColor; ctx.lineWidth = 1; ctx.globalAlpha = 0.4;
       ctx.stroke();
 
+      // center
       ctx.beginPath();
       ctx.arc(fpx, fpy, 6, 0, Math.PI*2);
       ctx.fillStyle = fc; ctx.globalAlpha = 0.9; ctx.fill();
-      ctx.strokeStyle = dark ? "#ffffff" : "#1e293b";
+      ctx.strokeStyle = clusterColor;  // ← cor do cluster
       ctx.lineWidth = 1.8; ctx.globalAlpha = 1; ctx.stroke();
 
-      if(dark){
-        ctx.beginPath();
-        ctx.arc(fpx, fpy, 9, 0, Math.PI*2);
-        ctx.strokeStyle = fc; ctx.lineWidth = 1; ctx.globalAlpha = 0.3;
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
+      // // halo
+      // ctx.beginPath();
+      // ctx.arc(fpx, fpy, 9, 0, Math.PI*2);
+      // ctx.strokeStyle = clusterColor; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.6;
+      // ctx.stroke();
+      // ctx.globalAlpha = 1;
     };
 
-    const drawFeatureLabel = (fpx, fpy, fi) => {
+    const drawFeatureLabel = (fpx, fpy, fi, clusterColor) => {
       ctx.font = "bold 9px monospace";
-      ctx.fillStyle = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+      ctx.fillStyle = clusterColor;
       ctx.globalAlpha = 0.9;
       ctx.textAlign = "center";
       ctx.fillText(`f${fi+3}`, fpx, fpy - 10);
@@ -457,26 +467,23 @@ export default function App() {
 
     const drawFeaturesAround = (cx, cy, p, trajIdx=0, currentT=null) => {
       const moorePositions = getMoorePositions(nExtraFeats);
+      const clusterColor = trajRef.current[trajIdx]?.color ?? "#94a3b8";
+
       selectedFeaturesRef.current.forEach(fi => {
         if(fi >= moorePositions.length) return;
         const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
         const key = `${fi}-${trajIdx}`;
         const isDisconnected = disconnectedFeaturesRef.current.has(key);
-        const indepPath = featureTrajectoriesRef.current[key];
+        const trajData = featureTrajectoriesRef.current[key];
 
         let fx, fy;
-        if(isDisconnected && indepPath?.length >= 2){
-          // independent trajectory
-          const trajs = trajRef.current;
-          const traj = trajs[trajIdx];
-          const tStart = traj?.startTime ?? 0;
-          const tEnd = traj?.endTime ?? 100;
-          const prog = currentT !== null
-            ? Math.max(0, Math.min(1, (currentT - tStart) / Math.max(1, tEnd - tStart)))
-            : 0;
-          const fc_pos = getCentroid(indepPath, prog);
-          fx = Math.max(-1, Math.min(1, fc_pos.x));
-          fy = Math.max(-1, Math.min(1, fc_pos.y));
+        const indepPos = isDisconnected && currentT !== null
+          ? getFeatureCentroidAtTick(trajData, currentT)
+          : null;
+
+        if(indepPos){
+          fx = Math.max(-1, Math.min(1, indepPos.x));
+          fy = Math.max(-1, Math.min(1, indepPos.y));
         } else {
           const [dx, dy] = moorePositions[fi];
           const t = featureTransformsRef.current?.[fi]?.[trajIdx] ?? {factor:1, offsetX:0, offsetY:0};
@@ -486,7 +493,6 @@ export default function App() {
 
         const fp = w2c(canvas, fx, fy);
 
-        // Different icon
         if(isDisconnected){
           ctx.strokeStyle = fc;
           ctx.lineWidth = 1.5;
@@ -500,8 +506,8 @@ export default function App() {
           ctx.globalAlpha = 1;
         }
 
-        drawFeaturePoint(p.px, p.py, fp.px, fp.py, fc);
-        drawFeatureLabel(fp.px, fp.py, fi);
+        drawFeaturePoint(p.px, p.py, fp.px, fp.py, fc, clusterColor);
+        drawFeatureLabel(fp.px, fp.py, fi, clusterColor);
       });
     };
 
@@ -564,32 +570,75 @@ export default function App() {
     }
 
     // ── Independent feature trajectories ─────────────────────────────────
-    Object.entries(featureTrajectoriesRef.current).forEach(([key, path]) => {
-      if(!path || path.length < 2) return;
-      const fi = parseInt(key.split('-')[0]);
-      const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-      ctx.strokeStyle = fc;
-      ctx.lineWidth = 1.5;
-      ctx.globalAlpha = 0.6;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      const p0 = w2c(canvas, path[0].x, path[0].y);
-      ctx.moveTo(p0.px, p0.py);
-      path.forEach(pt => {
-        const p = w2c(canvas, pt.x, pt.y);
-        ctx.lineTo(p.px, p.py);
+    Object.entries(featureTrajectoriesRef.current).forEach(([key, trajData]) => {
+       if(!trajData?.segments?.length) return;
+        const fi = parseInt(key.split('-')[0]);
+        const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+
+        trajData.segments.forEach(seg => {
+          const strokes = seg.path; // agora é array de traços
+          strokes.forEach(stroke => {
+            if(stroke.length < 2) return;
+            ctx.strokeStyle = fc;
+            ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.6;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
+            ctx.moveTo(p0.px, p0.py);
+            stroke.forEach(pt => {
+              const p = w2c(canvas, pt.x, pt.y);
+              ctx.lineTo(p.px, p.py);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 1;
+          });
+        });
       });
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      // starting point
-      ctx.beginPath();
-      ctx.arc(p0.px, p0.py, 4, 0, Math.PI*2);
-      ctx.fillStyle = fc;
-      ctx.globalAlpha = 0.8;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    });
+
+      // Traços já fechados do segmento em progresso (ainda não finalizado)
+      if(activeFeatureDrawRef.current !== null){
+        const fi = activeFeatureDrawRef.current.fi;
+        const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+
+        currentFeatureStrokesRef.current.forEach(stroke => {
+          if(stroke.length < 2) return;
+          ctx.strokeStyle = fc;
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = 0.6;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
+          ctx.moveTo(p0.px, p0.py);
+          stroke.forEach(pt => {
+            const p = w2c(canvas, pt.x, pt.y);
+            ctx.lineTo(p.px, p.py);
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        });
+
+        // Traço sendo desenhado AGORA (ainda no drag ativo)
+        if(currentFeatureStrokeRef.current.length >= 2){
+          const stroke = currentFeatureStrokeRef.current;
+          ctx.strokeStyle = fc;
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.9;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
+          ctx.moveTo(p0.px, p0.py);
+          stroke.forEach(pt => {
+            const p = w2c(canvas, pt.x, pt.y);
+            ctx.lineTo(p.px, p.py);
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
+      }
 
     // ── Statis Extra Features ────────────────────────
     if(!oCen && selectedFeaturesRef.current.size > 0){
@@ -597,11 +646,12 @@ export default function App() {
       if(trajs.length > 0){
         const moorePositions = getMoorePositions(nExtraFeats);
 
-        trajs.forEach((traj, ti) => {  
+        trajs.forEach((traj, ti) => {
           const seg = traj.segments[0];
           if(!seg) return;
           const c = seg.path[0];
           const p = w2c(canvas, c.x, c.y);
+          const clusterColor = traj.color;
 
           selectedFeaturesRef.current.forEach(fi => {
             if(fi >= moorePositions.length) return;
@@ -613,27 +663,38 @@ export default function App() {
             const fy = Math.max(-1, Math.min(1, c.y + dy * fStep * t.factor + (t.offsetY ?? 0)));
             const fp = w2c(canvas, fx, fy);
 
+            // line
+            ctx.beginPath();
+            ctx.moveTo(p.px, p.py);
+            ctx.lineTo(fp.px, fp.py);
+            ctx.strokeStyle = clusterColor;
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.4;
+            ctx.stroke();
+
+            // center
             ctx.beginPath();
             ctx.arc(fp.px, fp.py, 6, 0, Math.PI*2);
             ctx.fillStyle = fc;
             ctx.globalAlpha = 0.9;
             ctx.fill();
-            ctx.strokeStyle = dark ? "#ffffff" : "#1e293b";
+            ctx.strokeStyle = clusterColor;
             ctx.lineWidth = 1.8;
             ctx.globalAlpha = 1;
             ctx.stroke();
-            if(dark){
-              ctx.beginPath();
-              ctx.arc(fp.px, fp.py, 9, 0, Math.PI*2);
-              ctx.strokeStyle = fc;
-              ctx.lineWidth = 1;
-              ctx.globalAlpha = 0.3;
-              ctx.stroke();
-            }
-            ctx.globalAlpha = 1;
 
+            // // halo
+            // ctx.beginPath();
+            // ctx.arc(fp.px, fp.py, 9, 0, Math.PI*2);
+            // ctx.strokeStyle = clusterColor;
+            // ctx.lineWidth = 1.5;
+            // ctx.globalAlpha = 0.6;
+            // ctx.stroke();
+            // ctx.globalAlpha = 1;
+
+            // text
             ctx.font = "bold 9px monospace";
-            ctx.fillStyle = fc;
+            ctx.fillStyle = clusterColor;
             ctx.globalAlpha = 0.9;
             ctx.textAlign = "center";
             ctx.fillText(`f${fi+3}`, fp.px, fp.py - 10);
@@ -685,7 +746,7 @@ export default function App() {
     } else {
       render();
     }
-  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick, isAnimating, featureTransforms, featureTrajectories, disconnectedFeatures]);
+  },[render, theme, trajectories, currentSegments, currentPath, currentColor, drawing, selectedFeatures, featureStep, precomp, tick, isAnimating, featureTransforms, featureTrajectories, disconnectedFeatures, activeFeatureDraw]);
   
   const calcFeatureVals = useCallback((x, y) => {
     if(numExtraFeatures === 0) return [];
@@ -710,6 +771,7 @@ export default function App() {
   const handleDown = useCallback((ex, ey) => {
     if(isAnimating) return;
     const canvas = canvasRef.current;
+    isMouseDownRef.current = true;
 
     const hit = findHitFeature(ex, ey);
     if(hit){
@@ -719,17 +781,17 @@ export default function App() {
       return;
     }
 
+    if(activeFeatureDrawRef.current !== null){
+      drawingFeatureRef.current = activeFeatureDrawRef.current;
+      setDrawingFeature(activeFeatureDrawRef.current);
+      const pt = c2w(canvas, ex, ey);
+      currentFeatureStrokeRef.current = [pt]; // NOVO traço, não continua o anterior
+      return;
+    }
+
     const pt = c2w(canvas, ex, ey);
     const col = currentColor || randomColor(trajRef.current.length);
     setCurrentColor(col);
-
-    // If feature design mode
-    if(drawingFeatureRef.current !== null){
-      const key = `${drawingFeatureRef.current.fi}-${drawingFeatureRef.current.ti}`;
-      setFeatureTrajectories(prev => ({...prev, [key]: [pt]}));
-      featureTrajectoriesRef.current = {...featureTrajectoriesRef.current, [key]: [pt]};
-      return;
-    }
 
     if(inputMode === 'point'){
       setCurrentSegments(prev => {
@@ -753,6 +815,15 @@ export default function App() {
     const canvas = canvasRef.current;
     if(!canvas) return;
 
+    // Modo de desenho de feature ativo — qualquer drag continua o path
+    if(drawingFeatureRef.current !== null){
+      if(!isMouseDownRef.current) return;
+      const pt = c2w(canvas, ex, ey);
+      currentFeatureStrokeRef.current = [...currentFeatureStrokeRef.current, pt];
+      render();
+      return;
+    }
+    // Verifica se hit pendente virou drag (Move normal / início de disconnect draw)
     if(pendingHitRef.current !== null){
       const dx = ex - mouseDownPosRef.current.x;
       const dy = ey - mouseDownPosRef.current.y;
@@ -763,9 +834,10 @@ export default function App() {
         if(disconnectedFeaturesRef.current.has(key)){
           setDrawingFeature(hit);
           drawingFeatureRef.current = hit;
+          setActiveFeatureDraw(hit);
+          activeFeatureDrawRef.current = hit;
           const pt = c2w(canvas, ex, ey);
-          setFeatureTrajectories(prev => ({...prev, [key]: [pt]}));
-          featureTrajectoriesRef.current = {...featureTrajectoriesRef.current, [key]: [pt]};
+          currentFeatureStrokeRef.current = [pt];
         } else {
           setDraggingFeature(hit);
           draggingFeatureRef.current = hit;
@@ -774,19 +846,7 @@ export default function App() {
       return;
     }
 
-    // Independent feature path design
-    if(drawingFeatureRef.current !== null){
-      const key = `${drawingFeatureRef.current.fi}-${drawingFeatureRef.current.ti}`;
-      const pt = c2w(canvas, ex, ey);
-      setFeatureTrajectories(prev => ({...prev, [key]: [...(prev[key]??[]), pt]}));
-      featureTrajectoriesRef.current = {
-        ...featureTrajectoriesRef.current,
-        [key]: [...(featureTrajectoriesRef.current[key]??[]), pt]
-      };
-      return;
-    }
-
-    // Feature Drag
+    // Drag de feature (Move)
     if(draggingFeatureRef.current !== null){
       const {fi, ti} = draggingFeatureRef.current;
       const trajs = trajRef.current;
@@ -819,14 +879,22 @@ export default function App() {
   }, [drawing, inputMode, c2w, findHitFeature, isAnimating]);
 
   const handleUp = useCallback(() => {
-    // Click on feature — opens menu
+    if(drawingFeatureRef.current !== null){
+      setDrawingFeature(null);
+      drawingFeatureRef.current = null;
+      if(currentFeatureStrokeRef.current.length >= 2){
+        currentFeatureStrokesRef.current = [...currentFeatureStrokesRef.current, currentFeatureStrokeRef.current];
+      }
+      currentFeatureStrokeRef.current = [];
+      return;
+    }
+
     if(pendingHitRef.current !== null){
       const hit = pendingHitRef.current;
       pendingHitRef.current = null;
       const elapsed = Date.now() - mouseDownTimeRef.current;
       if(elapsed < CLICK_THRESHOLD){
         const canvas = canvasRef.current;
-        const rect = canvas.getBoundingClientRect();
         const moorePos = getMoorePositions(numExtraFeaturesRef.current);
         if(hit.fi >= moorePos.length) return;
         const [dx, dy] = moorePos[hit.fi];
@@ -838,25 +906,17 @@ export default function App() {
         const fx = Math.max(-1, Math.min(1, c.x + dx * featureStepRef.current * t.factor + (t.offsetX??0)));
         const fy = Math.max(-1, Math.min(1, c.y + dy * featureStepRef.current * t.factor + (t.offsetY??0)));
         const fp = {
-          px: ((fx+1)/2) * canvasRef.current.width,
-          py: ((1-fy)/2) * canvasRef.current.height
+          px: ((fx+1)/2) * canvas.width,
+          py: ((1-fy)/2) * canvas.height
         };
         setFeatureMenu({fi: hit.fi, ti: hit.ti, px: fp.px, py: fp.py});
       }
       return;
     }
 
-    // End drag feature
     if(draggingFeatureRef.current !== null){
       setDraggingFeature(null);
       draggingFeatureRef.current = null;
-      return;
-    }
-
-    // End feature trajectory drawing
-    if(drawingFeatureRef.current !== null){
-      setDrawingFeature(null);
-      drawingFeatureRef.current = null;
       return;
     }
 
@@ -990,12 +1050,32 @@ export default function App() {
     setStatus({msg:"Generated preview.",color:"#94a3b8"});
   },[currentSegments,currentPath,std,currentColor,render,w2c]);
 
-  const stopAnim = useCallback(()=>{
-    if(animRef.current) clearTimeout(animRef.current);
-    setIsAnimating(false);
-  },[]);
+  const finishFeatureSegment = useCallback(() => {
+    if(activeFeatureDrawRef.current === null) return;
+    const {fi, ti} = activeFeatureDrawRef.current;
+    const key = `${fi}-${ti}`;
+    const strokes = currentFeatureStrokesRef.current;
+    if(strokes.length > 0){
+      const traj = trajRef.current[ti];
+      const tStart = traj?.startTime ?? startTime;
+      const tEnd = traj?.endTime ?? endTime;
+      const updated = addFeatureSegment(featureTrajectoriesRef.current[key], strokes, tStart, tEnd);
+      setFeatureTrajectories(prev => ({...prev, [key]: updated}));
+      featureTrajectoriesRef.current = {...featureTrajectoriesRef.current, [key]: updated};
+    }
+    currentFeatureStrokesRef.current = [];
+    currentFeatureStrokeRef.current = [];
+    setActiveFeatureDraw(null);
+    activeFeatureDrawRef.current = null;
+  },[startTime, endTime]);
 
+    const stopAnim = useCallback(()=>{
+      if(animRef.current) clearTimeout(animRef.current);
+      setIsAnimating(false);
+    },[]);
+    
   const generate = useCallback(()=>{
+    finishFeatureSegment();
     let allT=[...trajectories];
     const pending=[...currentSegments,...(currentPath.length>3
       ?[{type:'free',path:currentPath,tStart:startTime,tEnd:endTime,connected:false}]
@@ -1033,7 +1113,7 @@ export default function App() {
     if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
     setPrecomp(res);setIsAnimating(true);tickRef.current=res.gStart;setTick(res.gStart);
     setStatus({msg:"Animating...",color:"#3b82f6"});
-  },[trajectories,currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures,featureStep,featureTransforms]);
+  },[trajectories,currentSegments,currentPath,startTime,endTime,overlapDur,currentColor,std,pts,distType,labelMode,mlRadius,numExtraFeatures,featureStep,featureTransforms,featureTrajectories,disconnectedFeatures,finishFeatureSegment]);
 
 
   const precompRef=useRef(null),speedRef=useRef(50);
@@ -1071,14 +1151,14 @@ export default function App() {
 
   const downloadCSVComplete = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
     triggerDownload(csv, `${base()}.csv`, "text/csv");
     setStatus({msg:`"${base()}.csv" downloaded!`,color:"#22c55e"});
   },[precomp, filename, numExtraFeatures, triggerDownload, base]);
 
   const downloadCSV = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
     const {train, test} = splitCSV(csv, trainPct);
     triggerDownload(train, `${base()}_train.csv`, "text/csv");
     triggerDownload(test,  `${base()}_test.csv`,  "text/csv");
@@ -1087,14 +1167,14 @@ export default function App() {
 
   const downloadARFFComplete = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
     triggerDownload(arff, `${base()}.arff`, "text/plain");
     setStatus({msg:`"${base()}.arff" downloaded!`,color:"#22c55e"});
   },[precomp, filename, numExtraFeatures, triggerDownload, base]);
 
   const downloadARFF = useCallback(()=>{
     if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures);
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
     const {train, test} = splitARFF(arff, trainPct);
     triggerDownload(train, `${base()}_train.arff`, "text/plain");
     triggerDownload(test,  `${base()}_test.arff`,  "text/plain");
@@ -1231,7 +1311,7 @@ export default function App() {
             <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:10,marginTop:2,marginBottom:4}}>
               <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:6,
                 textTransform:"uppercase",letterSpacing:"0.08em"}}>
-                Highlight features
+                Highlight features  <HelpIcon text={`Select extra features (f3, f4, ...) to visualize their position around each cluster's centroid.\n\nThe colored points show where each feature's value is sampled from, based on its distance and direction (Feature Step) relative to the centroid.\n\nClick a point on the canvas to move, disconnect, or reset its trajectory.`} theme={theme}/>
               </div>
               <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                 {["f1","f2"].map(f=>(
@@ -1608,7 +1688,7 @@ export default function App() {
             <div style={{position:"absolute",bottom:12,right:12,fontSize:9,color:theme.label,fontFamily:"monospace"}}>x,y ∈ [−1, 1]</div>
               {numExtraFeatures>0&&(
                 <div style={{position:"absolute",top:10,right:12,background:"rgba(245,166,35,0.1)",border:"1px solid rgba(245,166,35,0.3)",borderRadius:6,padding:"3px 10px",fontSize:9,fontFamily:"monospace",color:"#f5a623"}}>
-                  ◆ {numExtraFeatures + 2} features · grid {GRID_SIZE}×{GRID_SIZE}
+                  ◆ {numExtraFeatures + 2} features
                 </div>
               )}
             </div>
@@ -1712,43 +1792,18 @@ export default function App() {
                     ✏ Clear trajectory
                   </button>
                 )}
-                <button
-                  onClick={()=>{
-                    const {fi, ti} = featureMenu;
-                    const key = `${fi}-${ti}`;
-                    // Remove trajectory
-                    setFeatureTrajectories(prev => {
-                      const next = {...prev};
-                      delete next[key];
-                      featureTrajectoriesRef.current = next;
-                      return next;
-                    });
-                    // Reconnect
-                    setDisconnectedFeatures(prev => {
-                      const next = new Set(prev);
-                      next.delete(key);
-                      disconnectedFeaturesRef.current = next;
-                      return next;
-                    });
-                    // Reset transforms
-                    setFeatureTransforms(prev => {
-                      const next = {...prev};
-                      if(next[fi]?.[ti]){
-                        next[fi] = {...next[fi]};
-                        next[fi][ti] = {factor:1, offsetX:0, offsetY:0};
-                      }
-                      featureTransformsRef.current = next;
-                      return next;
-                    });
-                    setFeatureMenu(null);
-                  }}
-                  style={{padding:"5px 12px",borderRadius:5,border:"none",
-                    background:"transparent",color:"#f87171",
-                    fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}
-                  onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
-                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                  ↺ Reset to original
-                </button>
+                {activeFeatureDraw?.fi === featureMenu.fi && activeFeatureDraw?.ti === featureMenu.ti && (
+                  <button
+                    onClick={()=>{
+                      finishFeatureSegment();
+                      setFeatureMenu(null);
+                    }}
+                    style={{padding:"5px 12px",borderRadius:5,border:"none",
+                      background:"rgba(34,197,94,0.15)",color:"#4ade80",
+                      fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}>
+                    ✓ Finish segment
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -2055,6 +2110,17 @@ export default function App() {
               );
             })()}
           </div>
+        </div>
+      )}
+
+      {activeFeatureDraw !== null && (
+        <div style={{position:"absolute",top:12,left:"50%",transform:"translateX(-50%)",
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(8px)",
+          border:`1px solid ${FEATURE_COLORS[activeFeatureDraw.fi % FEATURE_COLORS.length]}`,
+          borderRadius:8,padding:"6px 16px",fontSize:10,fontFamily:"monospace",
+          color:FEATURE_COLORS[activeFeatureDraw.fi % FEATURE_COLORS.length],
+          pointerEvents:"none",zIndex:10}}>
+          ✏ Drawing f{activeFeatureDraw.fi+3} · C{activeFeatureDraw.ti} — click the feature menu to finish this segment
         </div>
       )}
 
