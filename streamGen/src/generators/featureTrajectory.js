@@ -1,11 +1,3 @@
-// ─── generators/featureTrajectory.js ──────────────────────────────────────
-// Logic for segmented, independent trajectories of disconnected extra
-// features. Mirrors the centroid-interpolation logic used for main cluster
-// segments in precompute.js, but scoped to a single feature ("fi-ti" key)
-// instead of a full cluster.
-// ────────────────────────────────────────────────────────────────────────
-
-
 function interpolatePath(strokes, progress) {
   if (!strokes || strokes.length === 0) return null;
 
@@ -69,7 +61,7 @@ export function addFeatureSegment(trajData, newPath, startTime, endTime) {
   const prevSegments = trajData?.segments ?? [];
   const newSegments = [
     ...prevSegments,
-    { path: newPath, tStart: startTime, tEnd: endTime }, // overwritten by redistributeSegments
+    { path: newPath, tStart: startTime, tEnd: endTime },
   ];
   return { segments: redistributeSegments(newSegments, startTime, endTime) };
 }

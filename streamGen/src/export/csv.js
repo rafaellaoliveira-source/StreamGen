@@ -1,4 +1,3 @@
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 export function shuffleByTick(pointClass) {
   const byTick = {};
   Object.entries(pointClass).forEach(([id, pt]) => {
@@ -22,8 +21,6 @@ export function splitEntries(entries, trainPct) {
   return { train: entries.slice(0, n), test: entries.slice(n) };
 }
 
-// ─── CSV ──────────────────────────────────────────────────────────────────────
-// ─── CSV ──────────────────────────────────────────────────────────────────────
 export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
   const labelCols = labelMode === 'multilabel'

@@ -19,8 +19,6 @@ import { generateSEA, SEA_THRESHOLDS } from "./generators/sea.js";
 import { HelpIcon } from "./components/Tooltip.jsx";
 import { getFeatureCentroidAtTick, addFeatureSegment, removeFeatureSegment, clearFeatureTrajectory } from "./generators/featureTrajectory.js";
 
-
-
 // ─── Frequency ─────────────────────────────────────────────────────────────
 function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRemoveRule, onClose, onSave }) {
   const validIntervals = traj.segments.map(s => ({tStart: s.tStart, tEnd: s.tEnd}));
@@ -481,7 +479,7 @@ export default function App() {
       ctx.beginPath();
       ctx.arc(fpx, fpy, 6, 0, Math.PI*2);
       ctx.fillStyle = fc; ctx.globalAlpha = 0.9; ctx.fill();
-      ctx.strokeStyle = clusterColor;  // ← cor do cluster
+      ctx.strokeStyle = clusterColor; 
       ctx.lineWidth = 1.8; ctx.globalAlpha = 1; ctx.stroke();
 
       // // halo

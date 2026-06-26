@@ -1,17 +1,3 @@
-/**
- * SEA generator based on RIVER's implementation.
- * 
- * Each observation has 3 features in [0, 10].
- * Only the first two are relevant.
- * Class is True if att1 + att2 > threshold.
- * 
- * Variants:
- *   0: threshold = 8
- *   1: threshold = 9
- *   2: threshold = 7
- *   3: threshold = 9.5
- */
-
 const SEA_THRESHOLDS = [8, 9, 7, 9.5];
 
 export function generateSEA({
@@ -20,18 +6,18 @@ export function generateSEA({
   pts        = 100,
   tStart     = 1,
   tEnd       = 1000,
-  driftTicks = [], // array of { t, variant } — when to switch variant
+  driftTicks = [], 
 }) {
   const dataPerTick = {}, pointClass = {};
   let gid = 0;
   const driftTicksSet = new Set();
 
-  // Build variant schedule
+  
   const schedule = [...driftTicks].sort((a, b) => a.t - b.t);
   let currentVariant = variant;
 
   for (let t = tStart; t <= tEnd; t++) {
-    // Check if variant changes at this tick
+   
     const change = schedule.find(d => d.t === t);
     if (change) {
       currentVariant = change.variant;

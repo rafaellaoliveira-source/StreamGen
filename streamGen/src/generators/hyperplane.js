@@ -1,14 +1,5 @@
 import { boxMuller } from "./gaussian.js";
 
-/**
- * Hyperplane generator based on RIVER's implementation.
- * 
- * A hyperplane in d-dimensional space: sum(wi * xi) = w0 = sum(wi)
- * - Positive class: sum(wi * xi) > w0
- * - Negative class: sum(wi * xi) <= w0
- * 
- * Drift: wi = wi + d * sigma at each tick
- */
 export function generateHyperplane({
   nFeatures      = 2,
   nDriftFeatures = 2,
@@ -19,7 +10,6 @@ export function generateHyperplane({
   tStart         = 1,
   tEnd           = 1000,
 }) {
-  // Initialize weights randomly
   const weights = Array.from({length: nFeatures}, () => Math.random());
   const directions = Array.from({length: nFeatures}, () => Math.random() > 0.5 ? 1 : -1);
 
@@ -32,17 +22,17 @@ export function generateHyperplane({
     const pointsT = [], colorsT = [];
 
     for (let i = 0; i < pts; i++) {
-      // Generate random features in [0, 1]
+      
       const features = Array.from({length: nFeatures}, () => Math.random());
 
-      // Classify
+      
       const sum = features.reduce((acc, xi, idx) => acc + weights[idx] * xi, 0);
       let label = sum > w0 ? 1 : 0;
 
-      // Add noise
+      
       if (Math.random() < noisePerc) label = 1 - label;
 
-      // Use first two features as x, y for visualization (mapped to [-1, 1])
+      
       const x = features[0] * 2 - 1;
       const y = features[1] * 2 - 1;
 
@@ -59,7 +49,7 @@ export function generateHyperplane({
       w0,
     };
 
-    // Apply drift to first nDriftFeatures weights
+  
     for (let fi = 0; fi < nDriftFeatures; fi++) {
       if (Math.random() < sigma) directions[fi] *= -1;
       weights[fi] += directions[fi] * magChange;
