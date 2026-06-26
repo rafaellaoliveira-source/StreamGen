@@ -1767,7 +1767,7 @@ export default function App() {
                       style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
                         borderRadius:4,color:theme.textFaint,cursor:"pointer",
                         fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
-                      ⎘
+                      🗐
                     </button>
                     <button
                       onClick={e=>{ e.stopPropagation(); openDensityModal(i); }}
@@ -1775,7 +1775,7 @@ export default function App() {
                       style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
                         borderRadius:4,color:t.densityRules?.length>0?"#f5a623":theme.textFaint,
                         cursor:"pointer",fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
-                      ⚙
+                      ⛯
                     </button>
                     <button
                       onClick={e=>{ e.stopPropagation(); removeCluster(i); }}
