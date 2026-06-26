@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
 // ─── Imports ────────────────────────────────────────────
+import SectionHeader from "./components/SectionHeader.jsx";
+import { inferDriftType, getDriftTypeColor } from "./utils/driftUtils.js";
 import { CLUSTER_COLORS, FEATURE_COLORS, randomColor, featureColor, makeTheme } from "./theme.js";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
@@ -19,8 +21,7 @@ import { getFeatureCentroidAtTick, addFeatureSegment, removeFeatureSegment, clea
 
 
 
-
-// ─── DensityModal ─────────────────────────────────────────────────────────────
+// ─── Frequency ─────────────────────────────────────────────────────────────
 function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRemoveRule, onClose, onSave }) {
   const validIntervals = traj.segments.map(s => ({tStart: s.tStart, tEnd: s.tEnd}));
   const [newRule, setNewRule] = useState({tStart:'', tEnd:'', pts:''});
@@ -287,12 +288,20 @@ export default function App() {
   const pendingHitRef = useRef(null);
   const mouseDownTimeRef = useRef(null);
   const mouseDownPosRef = useRef(null);
-  const lastDrawnFeatureRef = useRef(null);
   const [activeFeatureDraw, setActiveFeatureDraw] = useState(null);
   const activeFeatureDrawRef = useRef(null);
   const currentFeatureStrokesRef = useRef([]); 
   const currentFeatureStrokeRef = useRef([]); 
   const isMouseDownRef = useRef(false);
+  const [draggingCluster, setDraggingCluster] = useState(null);
+  const draggingClusterRef = useRef(null);
+  const draggingClusterStartRef = useRef(null); // initial mouse position
+  const draggingClusterOrigRef = useRef(null);  // original trajectory before drag
+  const [repositioningCluster, setRepositioningCluster] = useState(null);
+  const repositioningClusterRef = useRef(null);
+  const repositioningClusterOrigRef = useRef(null);
+  const [copiedClusterIdx, setCopiedClusterIdx] = useState(null);
+
 
   const DRAG_THRESHOLD = 5;
   const CLICK_THRESHOLD = 200;
@@ -329,6 +338,7 @@ export default function App() {
   useEffect(()=>{ currentPathRef.current      = currentPath;      },[currentPath]);
   useEffect(()=>{ currentColorRef.current     = currentColor;     },[currentColor]);
   useEffect(()=>{ drawingRef.current          = drawing;          },[drawing]);
+
   useEffect(()=>{
     if(!downloadMenuOpen) return;
     const close = (e)=>{
@@ -337,12 +347,19 @@ export default function App() {
     document.addEventListener('mousedown', close);
     return ()=>document.removeEventListener('mousedown', close);
   },[downloadMenuOpen]);
+
   useEffect(()=>{
     if(!featureMenu) return;
     const close = ()=>setFeatureMenu(null);
     document.addEventListener('mousedown', close);
     return ()=>document.removeEventListener('mousedown', close);
   },[featureMenu]);
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────── START ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
   const isAnimatingRef = useRef(false);
   useEffect(()=>{ isAnimatingRef.current = isAnimating; },[isAnimating]);
 
@@ -362,6 +379,29 @@ export default function App() {
       return next;
     });
   };
+
+  const CLUSTER_HIT_RADIUS = 10;
+
+  const findHitCluster = useCallback((ex, ey) => {
+    const canvas = canvasRef.current;
+    if(!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const px = ex - rect.left;
+    const py = ey - rect.top;
+
+    for(let ti = trajRef.current.length - 1; ti >= 0; ti--){
+      const traj = trajRef.current[ti];
+      for(const seg of traj.segments){
+        const points = seg.type === 'point' ? seg.path : seg.path.filter((_,i) => i % 5 === 0); // subsample para performance
+        for(const pt of points){
+          const fp = { px: ((pt.x+1)/2)*canvas.width, py: ((1-pt.y)/2)*canvas.height };
+          const dist = Math.sqrt((px-fp.px)**2 + (py-fp.py)**2);
+          if(dist <= CLUSTER_HIT_RADIUS) return ti;
+        }
+      }
+    }
+    return null;
+  }, []);
 
   const FEATURE_HIT_RADIUS = 12;
 
@@ -573,7 +613,7 @@ export default function App() {
         const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
 
         trajData.segments.forEach(seg => {
-          const strokes = seg.path; // agora é array de traços
+          const strokes = seg.path;
           strokes.forEach(stroke => {
             if(stroke.length < 2) return;
             ctx.strokeStyle = fc;
@@ -594,7 +634,6 @@ export default function App() {
         });
       });
 
-      // Traços já fechados do segmento em progresso (ainda não finalizado)
       if(activeFeatureDrawRef.current !== null){
         const fi = activeFeatureDrawRef.current.fi;
         const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
@@ -617,7 +656,6 @@ export default function App() {
           ctx.globalAlpha = 1;
         });
 
-        // Traço sendo desenhado AGORA (ainda no drag ativo)
         if(currentFeatureStrokeRef.current.length >= 2){
           const stroke = currentFeatureStrokeRef.current;
           ctx.strokeStyle = fc;
@@ -764,6 +802,84 @@ export default function App() {
     return Math.max(-1, Math.min(1, (fx + fy) / 2));
   }, [featureStep, featureTransforms]);
   
+  
+  const offsetCluster = useCallback((traj, dx, dy) => ({
+    ...traj,
+    id: Date.now(),
+    segments: traj.segments.map(seg => ({
+      ...seg,
+      path: seg.type === 'point'
+        ? [{
+            x: Math.max(-1, Math.min(1, seg.path[0].x + dx)),
+            y: Math.max(-1, Math.min(1, seg.path[0].y + dy))
+          }]
+        : seg.path.map(pt => ({
+            x: Math.max(-1, Math.min(1, pt.x + dx)),
+            y: Math.max(-1, Math.min(1, pt.y + dy))
+          }))
+    }))
+  }), []);
+
+  const duplicateCluster = useCallback((trajIdx) => {
+    const OFFSET = 0.08; // Fixed displacement in canvas units.
+    const original = trajRef.current[trajIdx];
+    const newColor = randomColor(trajRef.current.length);
+    const copy = {
+      ...offsetCluster(original, OFFSET, -OFFSET),
+      id: Date.now(),
+      color: newColor, 
+    };
+
+    setTrajectories(prev => [...prev, copy]);
+
+    // Copy featureTransforms to the new cluster.
+    const newTi = trajRef.current.length;
+    setFeatureTransforms(prev => {
+      const next = {...prev};
+      Object.keys(next).forEach(fi => {
+        if(next[fi]?.[trajIdx]){
+          next[fi] = {
+            ...next[fi],
+            [newTi]: {...next[fi][trajIdx]}
+          };
+        }
+      });
+      return next;
+    });
+
+    // Copy featureTrajectories to the new cluster.
+    setFeatureTrajectories(prev => {
+      const next = {...prev};
+      Object.entries(next).forEach(([key, val]) => {
+        const [fi, ti] = key.split('-').map(Number);
+        if(ti === trajIdx){
+          next[`${fi}-${newTi}`] = val;
+        }
+      });
+      featureTrajectoriesRef.current = next;
+      return next;
+    });
+
+    // Copy disconnectedFeatures to the new cluster.
+    setDisconnectedFeatures(prev => {
+      const next = new Set(prev);
+      [...prev].forEach(key => {
+        const [fi, ti] = key.split('-').map(Number);
+        if(ti === trajIdx) next.add(`${fi}-${newTi}`);
+      });
+      disconnectedFeaturesRef.current = next;
+      return next;
+    });
+
+    setRepositioningCluster(newTi);
+    repositioningClusterRef.current = newTi;
+    repositioningClusterOrigRef.current = copy;
+
+    setStatus({msg:`C${trajIdx} duplicated — drag to reposition C${newTi}`, color:"#f5a623"});
+
+    
+  }, [offsetCluster]);
+
   // ─── Mouse / Touch ────────────────────────────────────────────────────────
   const handleDown = useCallback((ex, ey) => {
     if(isAnimating) return;
@@ -778,11 +894,23 @@ export default function App() {
       return;
     }
 
+    if(repositioningClusterRef.current !== null){
+      draggingClusterRef.current = repositioningClusterRef.current;
+      setDraggingCluster(repositioningClusterRef.current);
+      draggingClusterStartRef.current = {x: ex, y: ey};
+      if(!repositioningClusterOrigRef.current){
+        repositioningClusterOrigRef.current = JSON.parse(
+          JSON.stringify(trajRef.current[repositioningClusterRef.current])
+        );
+      }
+      return;
+    }
+
     if(activeFeatureDrawRef.current !== null){
       drawingFeatureRef.current = activeFeatureDrawRef.current;
       setDrawingFeature(activeFeatureDrawRef.current);
       const pt = c2w(canvas, ex, ey);
-      currentFeatureStrokeRef.current = [pt]; // NOVO traço, não continua o anterior
+      currentFeatureStrokeRef.current = [pt]; 
       return;
     }
 
@@ -812,7 +940,7 @@ export default function App() {
     const canvas = canvasRef.current;
     if(!canvas) return;
 
-    // Modo de desenho de feature ativo — qualquer drag continua o path
+    // Feature drawing mode active — any drag continues the path.
     if(drawingFeatureRef.current !== null){
       if(!isMouseDownRef.current) return;
       const pt = c2w(canvas, ex, ey);
@@ -820,7 +948,20 @@ export default function App() {
       render();
       return;
     }
-    // Verifica se hit pendente virou drag (Move normal / início de disconnect draw)
+
+    if(draggingClusterRef.current !== null){
+      if(!isMouseDownRef.current) return;
+      const canvas = canvasRef.current;
+      const dxPx = ex - draggingClusterStartRef.current.x;
+      const dyPx = ey - draggingClusterStartRef.current.y;
+      const dx = (dxPx / canvas.width) * 2;
+      const dy = -(dyPx / canvas.height) * 2;
+      const ti = draggingClusterRef.current;
+      const updated = offsetCluster(repositioningClusterOrigRef.current, dx, dy);
+      setTrajectories(prev => prev.map((t, i) => i === ti ? updated : t));
+      return;
+    }
+
     if(pendingHitRef.current !== null){
       const dx = ex - mouseDownPosRef.current.x;
       const dy = ey - mouseDownPosRef.current.y;
@@ -883,6 +1024,16 @@ export default function App() {
         currentFeatureStrokesRef.current = [...currentFeatureStrokesRef.current, currentFeatureStrokeRef.current];
       }
       currentFeatureStrokeRef.current = [];
+      return;
+    }
+
+    if(draggingClusterRef.current !== null){
+      repositioningClusterOrigRef.current = JSON.parse(
+        JSON.stringify(trajRef.current[draggingClusterRef.current])
+      );
+      draggingClusterStartRef.current = null;
+      setDraggingCluster(null);
+      draggingClusterRef.current = null;
       return;
     }
 
@@ -952,10 +1103,7 @@ export default function App() {
     if(!valid.length){setStatus({msg:"Add points or draw something!",color:"#ef4444"});return;}
     if(startTime>=endTime){setStatus({msg:"Invalid Start/End!",color:"#ef4444"});return;}
 
-    const copies = valid.map(s => {
-      const firstPt = s.type==='point' ? s.path[0] : s.path[0];
-      const featureVals = calcFeatureVals(firstPt.x, firstPt.y);
-      return {...s, featureVals};
+    const copies = valid.map(s => {return {...s};
     });
 
     if(overlapDur>0 && copies.length>=2){
@@ -1009,12 +1157,14 @@ export default function App() {
   }, []);
 
   const removeCluster = useCallback((trajIdx) => {
-    setTrajectories(prev => prev.filter((_, i) => i !== trajIdx));
-    setPrecomp(null);
-    setTick(null);
-    if(animRef.current) clearTimeout(animRef.current);
-    setIsAnimating(false);
-    setStatus({msg:`Cluster ${trajIdx} removed.`, color:"#22c55e"});
+      setTrajectories(prev => prev.filter((_, i) => i !== trajIdx));
+      setSelectedCluster(prev => prev === trajIdx ? null : prev);
+      setCopiedClusterIdx(prev => prev === trajIdx ? null : prev);
+      setPrecomp(null);
+      setTick(null);
+      if(animRef.current) clearTimeout(animRef.current);
+      setIsAnimating(false);
+      setStatus({msg:`Cluster ${trajIdx} removed.`, color:"#22c55e"});
   }, []);
 
   const openDensityModal = useCallback((trajIdx) => {
@@ -1068,7 +1218,8 @@ export default function App() {
 
     const stopAnim = useCallback(()=>{
       if(animRef.current) clearTimeout(animRef.current);
-      setIsAnimating(false);
+       setIsAnimating(false);
+       finishFeatureSegment();
     },[]);
     
   const generate = useCallback(()=>{
@@ -1196,6 +1347,58 @@ export default function App() {
     a.click(); setStatus({msg:"Saved image!",color:"#22c55e"});
   },[filename]);
 
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────── END ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      console.log('key:', e.key, 'ctrl:', e.ctrlKey);
+      if(e.ctrlKey || e.metaKey){
+        switch(e.key){
+          case 'z':
+            e.preventDefault();
+            undo();
+            break;
+          case 'Enter':
+            e.preventDefault();
+            finishCluster();
+            break;
+          case 'g':
+            e.preventDefault();
+            if(!isAnimating) generate();
+            break;
+          case 'c':
+            e.preventDefault();
+            if(trajRef.current.length > 0){
+              const lastIdx = trajRef.current.length - 1;
+              setCopiedClusterIdx(lastIdx);
+              setStatus({msg:`C${lastIdx} copied!`, color:"#94a3b8"});
+            }
+            break;
+          case 'v':
+            e.preventDefault();
+            if(copiedClusterIdx !== null){
+              duplicateCluster(copiedClusterIdx);
+            }
+            break;
+        }
+      }
+     
+      if(e.key === 'Escape'){
+        if(repositioningCluster !== null){
+          setRepositioningCluster(null);
+          repositioningClusterRef.current = null;
+          repositioningClusterOrigRef.current = null;
+        }
+        if(activeFeatureDraw !== null){
+          finishFeatureSegment();
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [undo, finishCluster, generate, isAnimating, repositioningCluster, activeFeatureDraw, finishFeatureSegment, copiedClusterIdx]);
+
   useEffect(()=>{
     const resize=()=>{
       const canvas=canvasRef.current,cont=containerRef.current;
@@ -1213,48 +1416,18 @@ export default function App() {
  
 
   // WARNINGS -------------------------------
-  const inferredType=!hasMultipleSegs
-    ? (currentSegments[0]?.type === 'free' ? "Incremental" : "Stationary")
-    : overlapDur===0
-      ? "Abrupt"
-      : overlapIsTooShort
-        ? "Too short for Gradual"
-        : "Gradual";
-  const typeColor=inferredType==="Abrupt"
-    ? "#f87171"
-    : inferredType==="Gradual"
-      ? "#4ade80"
-      : inferredType==="Too short for Gradual"
-        ? "#f97316"
-        : inferredType==="Stationary"
-          ? "#94a3b8"
-          : "#60a5fa";
+  const inferredType = inferDriftType(hasMultipleSegs, currentSegments, overlapDur, overlapIsTooShort);
+  const typeColor = getDriftTypeColor(inferredType);
 
-  // ─── Sub-componentes UI ──────────────────────────
+  // ─── UI Sub-components ──────────────────────────
   const NI = useMemo(() => (props) => <NumInput {...props} theme={theme}/>, [theme]);
   const SI = useMemo(() => (props) => <SliderInput {...props} theme={theme}/>, [theme]);
   const RI = useMemo(() => (props) => <RadioUI {...props} theme={theme}/>, [theme]);
   const IB = useMemo(() => (props) => <IBtn {...props} theme={theme}/>, [theme]);
-
-  const SectionHeader = ({skey, label, badge}) => (
-    <div onClick={() => toggleSection(skey)}
-      style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-        cursor:"pointer",paddingBottom:8,
-        marginBottom: openSections[skey] ? 6 : 0,
-        borderBottom: openSections[skey] ? `1px solid ${theme.border}` : "none",
-        userSelect:"none"}}>
-      <div style={{display:"flex",alignItems:"center",gap:6}}>
-        <span style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",
-          textTransform:"uppercase",letterSpacing:"0.1em"}}>{label}</span>
-        {badge && <span style={{fontSize:9,color:"#f5a623",fontFamily:"monospace"}}>{badge}</span>}
-      </div>
-      <span style={{fontSize:9,color:theme.textFaint,
-        display:"inline-block",transition:"transform 0.2s",
-        transform: openSections[skey] ? "rotate(0deg)" : "rotate(-90deg)"}}>▾</span>
-    </div>
-  );
-
-  // ─── JSX ──────────────────────────────────────────────────────────────────
+  
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────── JSX ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:theme.bg,fontFamily:"'Segoe UI',sans-serif",color:theme.text,overflow:"hidden"}}>
 
@@ -1463,7 +1636,8 @@ export default function App() {
           {/* ── Segments under construction ── */}
           {currentSegments.length>0&&(
             <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:10,marginTop:4}}>
-              <SectionHeader skey="segments" label="Segments under construction"/>
+              <SectionHeader skey="segments" label="Segments under construction"
+                  openSections={openSections} onToggle={toggleSection} theme={theme}/>
               {openSections.segments && (
                 <>
                   {currentSegments.map((seg,i)=>{
@@ -1572,17 +1746,31 @@ export default function App() {
           {/* ── Clusters completed ── */}
           {trajectories.length>0&&(
             <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:10,marginTop:14}}>
-              <SectionHeader skey="clusters" label={`Clusters (${trajectories.length})`}/>
+              <SectionHeader skey="clusters" label={`Clusters (${trajectories.length})`}
+                openSections={openSections} onToggle={toggleSection} theme={theme}/>
               {openSections.clusters && trajectories.map((t,i)=>(
-                <div key={t.id} style={{marginBottom:7,padding:"5px 8px",borderRadius:6,
-                  border:`1px solid ${theme.cardBorder}`}}>
+                <div key={t.id}
+                  style={{marginBottom:7,padding:"5px 8px",borderRadius:6,
+                    border:`1px solid ${theme.cardBorder}`,
+                    background:"transparent"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:t.segments.length>1?6:0}}>
                     <div style={{width:8,height:8,borderRadius:"50%",background:t.color,flexShrink:0}}/>
                     <span style={{fontSize:10,color:theme.textDim,fontFamily:"monospace",flex:1}}>
                       C{i} · {t.startTime}→{t.endTime} · {t.segments.length} seg
                     </span>
+                    {copiedClusterIdx === i && (
+                      <span style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace"}}>⎘</span>
+                    )}
                     <button
-                      onClick={()=>openDensityModal(i)}
+                      onClick={e=>{ e.stopPropagation(); duplicateCluster(i); }}
+                      title="Duplicate cluster"
+                      style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
+                        borderRadius:4,color:theme.textFaint,cursor:"pointer",
+                        fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
+                      ⎘
+                    </button>
+                    <button
+                      onClick={e=>{ e.stopPropagation(); openDensityModal(i); }}
                       title="Frequency rules"
                       style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
                         borderRadius:4,color:t.densityRules?.length>0?"#f5a623":theme.textFaint,
@@ -1590,7 +1778,7 @@ export default function App() {
                       ⚙
                     </button>
                     <button
-                      onClick={()=>removeCluster(i)}
+                      onClick={e=>{ e.stopPropagation(); removeCluster(i); }}
                       title="Remove cluster"
                       style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
                         borderRadius:4,color:"#f87171",cursor:"pointer",
@@ -1669,7 +1857,7 @@ export default function App() {
           </div>
 
           {/* Canvas */}
-          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor:drawingFeature!==null?"crosshair":draggingFeature!==null?"grabbing":isAnimating?"default":"crosshair"}}>
+          <div ref={containerRef} style={{flex:1,position:"relative",overflow:"hidden",cursor: draggingCluster !== null ? "grabbing" : repositioningCluster !== null ? "grab" : drawingFeature !== null || activeFeatureDraw !== null ? "crosshair" : draggingFeature !== null ? "grabbing" : isAnimating ? "default" : "crosshair"}}>
             <canvas ref={canvasRef}
               onMouseDown={e=>handleDown(e.clientX,e.clientY)}
               onMouseMove={e=>handleMove(e.clientX,e.clientY)}
@@ -2117,6 +2305,29 @@ export default function App() {
           color:FEATURE_COLORS[activeFeatureDraw.fi % FEATURE_COLORS.length],
           pointerEvents:"none",zIndex:10}}>
           ✏ Drawing f{activeFeatureDraw.fi+3} · C{activeFeatureDraw.ti} — click the feature menu to finish this segment
+        </div>
+      )}
+
+      {repositioningCluster !== null && (
+        <div style={{position:"absolute",top:12,left:"50%",transform:"translateX(-50%)",
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(8px)",
+          border:`1px solid ${trajectories[repositioningCluster]?.color ?? "#f5a623"}`,
+          borderRadius:8,padding:"6px 16px",fontSize:10,fontFamily:"monospace",
+          color:trajectories[repositioningCluster]?.color ?? "#f5a623",
+          zIndex:10,display:"flex",alignItems:"center",gap:12}}>
+          <span>↔ Repositioning C{repositioningCluster} — drag to place</span>
+          <button
+            onClick={()=>{
+              setRepositioningCluster(null);
+              repositioningClusterRef.current = null;
+              repositioningClusterOrigRef.current = null;
+              setStatus({msg:`C${repositioningCluster} positioned!`, color:"#22c55e"});
+            }}
+            style={{padding:"3px 10px",borderRadius:5,border:"none",
+              background:"rgba(34,197,94,0.2)",color:"#4ade80",
+              fontSize:9,cursor:"pointer",fontFamily:"monospace"}}>
+            ✓ Confirm
+          </button>
         </div>
       )}
 
