@@ -390,7 +390,7 @@ export default function App() {
     for(let ti = trajRef.current.length - 1; ti >= 0; ti--){
       const traj = trajRef.current[ti];
       for(const seg of traj.segments){
-        const points = seg.type === 'point' ? seg.path : seg.path.filter((_,i) => i % 5 === 0); // subsample para performance
+        const points = seg.type === 'point' ? seg.path : seg.path.filter((_,i) => i % 5 === 0); 
         for(const pt of points){
           const fp = { px: ((pt.x+1)/2)*canvas.width, py: ((1-pt.y)/2)*canvas.height };
           const dist = Math.sqrt((px-fp.px)**2 + (py-fp.py)**2);
