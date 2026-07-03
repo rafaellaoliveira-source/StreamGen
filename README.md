@@ -55,13 +55,13 @@ your browser (no installation required).
 3. Select the input mode (Free-draw or Points) in the toolbar **(b)**.
 4. Draw the centroid trajectory on the canvas **(c)**.
 5. Click **Generate Stream** to animate and compute the dataset.
-6. Download the output files using the CSV, ARFF, or META buttons.
+6. Download the output files.
 
 <!-- ![til](streamGen\resources\images\streamgenIncrementalExample.gif) -->
-<figure>
+<!-- <figure>
     <center><figcaption>StreamGen incremental stream generation example</figcaption>
     <img src="streamGen\resources\images\streamgenIncrementalExample.gif"/> </center>
-</figure>
+</figure> -->
 
 
 

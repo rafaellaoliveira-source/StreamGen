@@ -1,0 +1,39 @@
+=== StreamGen Dataset Metadata ===
+
+Generated: 2026-06-19T13:29:15.683Z
+Label mode: Multi-label
+Total clusters: 2
+Extra features: 3 (f3…f5)
+Total instances: 4.000
+Train instances: 800 (20%)
+Test instances:  3.200 (80%)
+Train split: 20%
+Test split: 80%
+
+--- Cluster 0 ---
+Color: #e05c5c
+Total instances: 2.000
+Labeling Rate (class_0): 3.839
+Multi-label instances: 3.663
+Duration: 1 - 100
+Segments: 2
+  Segment 1: type=free | t=1→71
+  Segment 2: type=free | t=31→100
+  Drift start: 31
+  Drift end:   71
+  Drift duration: 40 ticks
+  Frequency: global default
+
+--- Cluster 1 ---
+Color: #4e9af1
+Total instances: 2.000
+Labeling Rate (class_1): 3.824
+Multi-label instances: 3.663
+Duration: 1 - 100
+Segments: 2
+  Segment 1: type=free | t=1→71
+  Segment 2: type=free | t=31→100
+  Drift start: 31
+  Drift end:   71
+  Drift duration: 40 ticks
+  Frequency: global default
