@@ -4,9 +4,12 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import SectionHeader from "./components/SectionHeader.jsx";
 import { inferDriftType, getDriftTypeColor } from "./utils/driftUtils.js";
 import { CLUSTER_COLORS, FEATURE_COLORS, randomColor, featureColor, makeTheme } from "./theme.js";
+import DensityModal from "./components/DensityModal.jsx";
+import FeatureConfigModal from "./components/FeatureConfigModal.jsx";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
 import { makeCSV, splitCSV,shuffleByTick, splitEntries } from "./export/csv.js";
+import { useDownloads } from "./hooks/useDownloads.js";
 import { makeARFF, splitARFF } from "./export/arff.js";
 import { makeMetaTXT } from "./export/meta.js";
 import { downloadImage as downloadImageFile } from "./export/image.js";
@@ -18,199 +21,6 @@ import { generateHyperplane } from "./generators/hyperplane.js";
 import { generateSEA, SEA_THRESHOLDS } from "./generators/sea.js";
 import { HelpIcon } from "./components/Tooltip.jsx";
 import { getFeatureCentroidAtTick, addFeatureSegment, removeFeatureSegment, clearFeatureTrajectory } from "./generators/featureTrajectory.js";
-
-// ─── Frequency ─────────────────────────────────────────────────────────────
-function DensityModal({ traj, trajIdx, defaultPts, theme, rules, onAddRule, onRemoveRule, onClose, onSave }) {
-  const validIntervals = traj.segments.map(s => ({tStart: s.tStart, tEnd: s.tEnd}));
-  const [newRule, setNewRule] = useState({tStart:'', tEnd:'', pts:''});
-  const [ruleError, setRuleError] = useState('');
-
-  const isValidRule = (r) =>
-    validIntervals.some(iv => r.tStart >= iv.tStart && r.tEnd <= iv.tEnd) &&
-    r.tStart < r.tEnd && r.pts >= 1;
-
-  const addRule = () => {
-   
-    const r = {
-      tStart: parseInt(newRule.tStart),
-      tEnd: parseInt(newRule.tEnd),
-      pts: parseInt(newRule.pts)
-    };
-  
-    if(isNaN(r.tStart)||isNaN(r.tEnd)||isNaN(r.pts)){
-      setRuleError('All fields are required.'); return;
-    }
-    if(!isValidRule(r)){
-      setRuleError(`Range must be within: ${validIntervals.map(iv=>`t=${iv.tStart}→${iv.tEnd}`).join(', ')}`);
-      return;
-    }
-    setRuleError('');
-    onAddRule(r);
-    setNewRule({tStart:'', tEnd:'', pts:''});
-  };
-
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",
-      backdropFilter:"blur(6px)",display:"flex",alignItems:"center",
-      justifyContent:"center",zIndex:200}}
-      onClick={onClose}>
-      <div style={{background:theme.sidebar,border:`1px solid ${theme.border}`,
-        borderRadius:14,padding:24,maxWidth:420,width:"90%",maxHeight:"80vh",overflowY:"auto"}}
-        onClick={e=>e.stopPropagation()}>
-
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
-          <div style={{width:10,height:10,borderRadius:"50%",background:traj.color,flexShrink:0}}/>
-          <span style={{fontSize:13,fontWeight:700,color:theme.text}}>
-            Cluster {trajIdx} — Frequency Rules <HelpIcon text={"Controls how many instances are generated per timestamp for this cluster, within a specific time interval. \n\n Overrides the global Instances per Centroid value for the selected range."} theme={theme}/>
-          </span>
-        </div>
-
-        <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:12,lineHeight:1.6}}>
-          Global default: {defaultPts} inst/tick<br/>
-          Valid intervals: {validIntervals.map(iv=>`t=${iv.tStart}→${iv.tEnd}`).join(', ')}
-        </div>
-
-        {rules.length===0 && (
-          <div style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace",marginBottom:12}}>
-            No rules — using global default.
-          </div>
-        )}
-        {rules.map((r,ri)=>(
-          <div key={ri} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,
-            padding:"5px 8px",borderRadius:6,border:`1px solid ${theme.cardBorder}`,
-            background:theme.cardBg}}>
-            <span style={{fontSize:10,fontFamily:"monospace",color:theme.textMuted,flex:1}}>
-              t = {r.tStart} → t = {r.tEnd} · {r.pts} inst/tick
-            </span>
-            <button onClick={()=>onRemoveRule(ri)}
-              style={{background:"transparent",border:"none",color:"#f87171",
-                cursor:"pointer",fontSize:12,padding:0}}>✕</button>
-          </div>
-        ))}
-
-        <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:12,marginTop:8}}>
-          <div style={{fontSize:9,color:theme.textFaint,fontFamily:"monospace",marginBottom:8}}>
-            Add rule
-          </div>
-          <div style={{display:"flex",gap:6,marginBottom:6}}>
-            {[["t start","tStart"],["t end","tEnd"],["inst/tick","pts"]].map(([lbl,key])=>(
-              <div key={key} style={{flex:1}}>
-                <div style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace",marginBottom:3}}>{lbl}</div>
-                <input type="number" value={newRule[key]}
-                  onChange={e=>setNewRule(prev=>({...prev,[key]:e.target.value}))}
-                  style={{width:"100%",background:theme.inputBg,border:`1px solid ${theme.cardBorder}`,
-                    color:theme.textMuted,borderRadius:5,padding:"4px 6px",fontSize:11,
-                    fontFamily:"monospace",boxSizing:"border-box"}}/>
-              </div>
-            ))}
-          </div>
-          {ruleError&&(
-            <div style={{fontSize:9,color:"#f87171",fontFamily:"monospace",marginBottom:6,lineHeight:1.5}}>
-              ⚠ {ruleError}
-            </div>
-          )}
-          <button onClick={addRule}
-            style={{width:"100%",padding:"6px",borderRadius:6,border:"none",
-              background:"rgba(59,130,246,0.15)",color:"#93c5fd",
-              fontSize:11,fontFamily:"monospace",cursor:"pointer"}}>
-            + Add rule
-          </button>
-        </div>
-
-        <div style={{display:"flex",gap:8,marginTop:16}}>
-          <button onClick={onClose}
-            style={{flex:1,padding:"7px",borderRadius:7,border:`1px solid ${theme.border}`,
-              background:"transparent",color:theme.textDim,cursor:"pointer",
-              fontSize:11,fontFamily:"monospace"}}>
-            Cancel
-          </button>
-          <button onClick={() => { onSave(); }}
-            style={{flex:1,padding:"7px",borderRadius:7,border:"none",
-              background:"rgba(59,130,246,0.2)",color:"#93c5fd",
-              cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700}}>
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-function FeatureConfigModal({ fi, trajs, transforms, onChange, onClose, theme }) {
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",
-      backdropFilter:"blur(6px)",display:"flex",alignItems:"center",
-      justifyContent:"center",zIndex:200}}
-      onClick={onClose}>
-      <div style={{background:theme.sidebar,border:`1px solid ${theme.border}`,
-        borderRadius:14,padding:24,maxWidth:380,width:"90%"}}
-        onClick={e=>e.stopPropagation()}>
-
-        <div style={{fontSize:13,fontWeight:700,color:theme.text,marginBottom:4}}>
-          f{fi+3} Configuration
-        </div>
-
-        {trajs.map((traj, ti) => {
-          const t = transforms[fi]?.[ti] ?? {factor:1, offset:0};
-          return (
-            <div key={ti} style={{marginBottom:12,padding:"10px 12px",
-              borderRadius:8,border:`1px solid ${theme.cardBorder}`,
-              background:theme.cardBg}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
-                <div style={{width:8,height:8,borderRadius:"50%",
-                  background:traj.color,flexShrink:0}}/>
-                <span style={{fontSize:10,color:theme.textMuted,
-                  fontFamily:"monospace"}}>C{ti}</span>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:9,color:theme.textFaint,
-                    fontFamily:"monospace",marginBottom:4}}>Factor <HelpIcon text="Scales the distance of this feature from the centroid. factor > 1 = farther, factor < 1 = closer, factor < 0 = opposite side." theme={theme}/></div>
-                  <input type="number" value={t.factor} step={0.1} min={-3} max={3}
-                     onChange={e=>{
-                      const v = parseFloat(e.target.value)||1;
-                      onChange(fi, ti, "factor", Math.max(-3, Math.min(3, v)));
-                    }}
-                    style={{width:"100%",background:theme.inputBg,
-                      border:`1px solid ${theme.cardBorder}`,
-                      color:theme.textMuted,borderRadius:5,
-                      padding:"4px 6px",fontSize:11,fontFamily:"monospace",
-                      boxSizing:"border-box"}}/>
-                </div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:9,color:theme.textFaint,
-                    fontFamily:"monospace",marginBottom:4}}>Offset <HelpIcon text="Shifts the feature position. Range: [−0.5, 0.5]. Positive = right/up, Negative = left/down." theme={theme}/></div>
-                  <input type="number" value={t.offset} step={0.05}
-                     onChange={e=>{
-                      const v = parseFloat(e.target.value)||0;
-                      onChange(fi, ti, "offset", Math.max(-0.5, Math.min(0.5, v)));
-                    }}
-                    style={{width:"100%",background:theme.inputBg,
-                      border:`1px solid ${theme.cardBorder}`,
-                      color:theme.textMuted,borderRadius:5,
-                      padding:"4px 6px",fontSize:11,fontFamily:"monospace",
-                      boxSizing:"border-box"}}/>
-                </div>
-              </div>
-              <div style={{fontSize:9,color:theme.textFaint,
-                fontFamily:"monospace",marginTop:6}}>
-                f{fi+3} = value × {t.factor} + {t.offset}
-              </div>
-            </div>
-          );
-        })}
-
-        <button onClick={onClose}
-          style={{marginTop:8,width:"100%",padding:"7px",borderRadius:7,
-            border:`1px solid ${theme.border}`,background:"transparent",
-            color:theme.textDim,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>
-          Close
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ─── Main component ─────────────────────────────────────────────────────
 export default function App() {
@@ -259,7 +69,6 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const [tick,        setTick]        = useState(null);
   const [precomp,     setPrecomp]     = useState(null);
-  const [downloadMenuOpen, setDownloadMenuOpen] = useState(null);
   const [densityModal, setDensityModal] = useState(null);
   const [editingRules, setEditingRules] = useState([]);
   const [showStreamParams, setShowStreamParams] = useState(false);
@@ -270,7 +79,6 @@ export default function App() {
   const [status,      setStatus]      = useState({msg:"Ready.",color:"#6b7280"});
   const [showHelp,    setShowHelp]    = useState(false);
   const [darkMode,    setDarkMode]    = useState(true);
-  const [hoveredFeatureVal, setHoveredFeatureVal] = useState(null);
   const [featureTransforms, setFeatureTransforms] = useState({});
   const [draggingFeature, setDraggingFeature] = useState(null);
   const draggingFeatureRef = useRef(null);
@@ -299,6 +107,8 @@ export default function App() {
   const repositioningClusterRef = useRef(null);
   const repositioningClusterOrigRef = useRef(null);
   const [copiedClusterIdx, setCopiedClusterIdx] = useState(null);
+  const [clusterMenu, setClusterMenu] = useState(null);
+  const pendingClusterHitRef = useRef(null);
 
 
   const DRAG_THRESHOLD = 5;
@@ -322,6 +132,7 @@ export default function App() {
   useEffect(()=>{ disconnectedFeaturesRef.current = disconnectedFeatures; }, [disconnectedFeatures]);
   useEffect(()=>{ featureTrajectoriesRef.current = featureTrajectories; }, [featureTrajectories]);
   useEffect(()=>{ drawingFeatureRef.current = drawingFeature; }, [drawingFeature]);
+  
 
 
   const currentSegmentsRef  = useRef([]);
@@ -338,13 +149,11 @@ export default function App() {
   useEffect(()=>{ drawingRef.current          = drawing;          },[drawing]);
 
   useEffect(()=>{
-    if(!downloadMenuOpen) return;
-    const close = (e)=>{
-      if(!e.target.closest('[data-download-menu]')) setDownloadMenuOpen(null);
-    };
-    document.addEventListener('mousedown', close);
-    return ()=>document.removeEventListener('mousedown', close);
-  },[downloadMenuOpen]);
+      if(!clusterMenu) return;
+      const close = ()=>setClusterMenu(null);
+      document.addEventListener('mousedown', close);
+      return ()=>document.removeEventListener('mousedown', close);
+    },[clusterMenu]);
 
   useEffect(()=>{
     if(!featureMenu) return;
@@ -353,6 +162,7 @@ export default function App() {
     return ()=>document.removeEventListener('mousedown', close);
   },[featureMenu]);
 
+  
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 // ───────────────────────────────────────────────────────────────────────────────────────────── START ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -546,6 +356,24 @@ export default function App() {
       });
     };
 
+    const drawDashedStroke = (stroke, color, lineWidth=1.5, alpha=0.6) => {
+      if(!stroke || stroke.length < 2) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.globalAlpha = alpha;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
+      ctx.moveTo(p0.px, p0.py);
+      stroke.forEach(pt => {
+        const p = w2c(canvas, pt.x, pt.y);
+        ctx.lineTo(p.px, p.py);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    };
+
     // ── Completed trajectories ────────────────────────────────────────────
     for(const traj of trajRef.current){
       for(let si=0;si<traj.segments.length;si++){
@@ -606,136 +434,30 @@ export default function App() {
 
     // ── Independent feature trajectories ─────────────────────────────────
     Object.entries(featureTrajectoriesRef.current).forEach(([key, trajData]) => {
-       if(!trajData?.segments?.length) return;
-        const fi = parseInt(key.split('-')[0]);
-        const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-
-        trajData.segments.forEach(seg => {
-          const strokes = seg.path;
-          strokes.forEach(stroke => {
-            if(stroke.length < 2) return;
-            ctx.strokeStyle = fc;
-            ctx.lineWidth = 1.5;
-            ctx.globalAlpha = 0.6;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
-            ctx.moveTo(p0.px, p0.py);
-            stroke.forEach(pt => {
-              const p = w2c(canvas, pt.x, pt.y);
-              ctx.lineTo(p.px, p.py);
-            });
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.globalAlpha = 1;
-          });
-        });
+      if(!trajData?.segments?.length) return;
+      const fi = parseInt(key.split('-')[0]);
+      const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+      trajData.segments.forEach(seg => {
+        seg.path.forEach(stroke => drawDashedStroke(stroke, fc));
       });
+    });
 
-      if(activeFeatureDrawRef.current !== null){
-        const fi = activeFeatureDrawRef.current.fi;
-        const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-
-        currentFeatureStrokesRef.current.forEach(stroke => {
-          if(stroke.length < 2) return;
-          ctx.strokeStyle = fc;
-          ctx.lineWidth = 1.5;
-          ctx.globalAlpha = 0.6;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
-          ctx.moveTo(p0.px, p0.py);
-          stroke.forEach(pt => {
-            const p = w2c(canvas, pt.x, pt.y);
-            ctx.lineTo(p.px, p.py);
-          });
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.globalAlpha = 1;
-        });
-
-        if(currentFeatureStrokeRef.current.length >= 2){
-          const stroke = currentFeatureStrokeRef.current;
-          ctx.strokeStyle = fc;
-          ctx.lineWidth = 2;
-          ctx.globalAlpha = 0.9;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          const p0 = w2c(canvas, stroke[0].x, stroke[0].y);
-          ctx.moveTo(p0.px, p0.py);
-          stroke.forEach(pt => {
-            const p = w2c(canvas, pt.x, pt.y);
-            ctx.lineTo(p.px, p.py);
-          });
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.globalAlpha = 1;
-        }
-      }
+    if(activeFeatureDrawRef.current !== null){
+      const fi = activeFeatureDrawRef.current.fi;
+      const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
+      currentFeatureStrokesRef.current.forEach(stroke => drawDashedStroke(stroke, fc));
+      drawDashedStroke(currentFeatureStrokeRef.current, fc, 2, 0.9);
+    }
 
     // ── Statis Extra Features ────────────────────────
     if(!oCen && selectedFeaturesRef.current.size > 0){
-      const trajs = trajRef.current;
-      if(trajs.length > 0){
-        const moorePositions = getMoorePositions(nExtraFeats);
-
-        trajs.forEach((traj, ti) => {
-          const seg = traj.segments[0];
-          if(!seg) return;
-          const c = seg.path[0];
-          const p = w2c(canvas, c.x, c.y);
-          const clusterColor = traj.color;
-
-          selectedFeaturesRef.current.forEach(fi => {
-            if(fi >= moorePositions.length) return;
-            const [dx, dy] = moorePositions[fi];
-            const fc = FEATURE_COLORS[fi % FEATURE_COLORS.length];
-
-            const t = featureTransformsRef.current?.[fi]?.[ti] ?? {factor:1, offsetX:0, offsetY:0};
-            const fx = Math.max(-1, Math.min(1, c.x + dx * fStep * t.factor + (t.offsetX ?? 0)));
-            const fy = Math.max(-1, Math.min(1, c.y + dy * fStep * t.factor + (t.offsetY ?? 0)));
-            const fp = w2c(canvas, fx, fy);
-
-            // line
-            ctx.beginPath();
-            ctx.moveTo(p.px, p.py);
-            ctx.lineTo(fp.px, fp.py);
-            ctx.strokeStyle = clusterColor;
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.4;
-            ctx.stroke();
-
-            // center
-            ctx.beginPath();
-            ctx.arc(fp.px, fp.py, 6, 0, Math.PI*2);
-            ctx.fillStyle = fc;
-            ctx.globalAlpha = 0.9;
-            ctx.fill();
-            ctx.strokeStyle = clusterColor;
-            ctx.lineWidth = 1.8;
-            ctx.globalAlpha = 1;
-            ctx.stroke();
-
-            // // halo
-            // ctx.beginPath();
-            // ctx.arc(fp.px, fp.py, 9, 0, Math.PI*2);
-            // ctx.strokeStyle = clusterColor;
-            // ctx.lineWidth = 1.5;
-            // ctx.globalAlpha = 0.6;
-            // ctx.stroke();
-            // ctx.globalAlpha = 1;
-
-            // text
-            ctx.font = "bold 9px monospace";
-            ctx.fillStyle = clusterColor;
-            ctx.globalAlpha = 0.9;
-            ctx.textAlign = "center";
-            ctx.fillText(`f${fi+3}`, fp.px, fp.py - 10);
-            ctx.globalAlpha = 1;
-            ctx.textAlign = "left";
-          });
-        });
-      }
+      trajRef.current.forEach((traj, ti) => {
+        const seg = traj.segments[0];
+        if(!seg) return;
+        const c = seg.path[0];
+        const p = w2c(canvas, c.x, c.y);
+        drawFeaturesAround(c.x, c.y, p, ti, null);
+      });
     }
 
     // ── Animated Poits ──────────────────────────────────────────────────
@@ -904,6 +626,16 @@ export default function App() {
       return;
     }
 
+    if(!activeFeatureDrawRef.current){
+      const hitCluster = findHitCluster(ex, ey);
+      if(hitCluster !== null){
+        mouseDownTimeRef.current = Date.now();
+        mouseDownPosRef.current = {x: ex, y: ey};
+        pendingClusterHitRef.current = hitCluster;
+        return;
+      }
+    }
+
     if(activeFeatureDrawRef.current !== null){
       drawingFeatureRef.current = activeFeatureDrawRef.current;
       setDrawingFeature(activeFeatureDrawRef.current);
@@ -944,6 +676,22 @@ export default function App() {
       const pt = c2w(canvas, ex, ey);
       currentFeatureStrokeRef.current = [...currentFeatureStrokeRef.current, pt];
       render();
+      return;
+    }
+
+    if(pendingClusterHitRef.current !== null){
+      const dx = ex - mouseDownPosRef.current.x;
+      const dy = ey - mouseDownPosRef.current.y;
+      if(Math.sqrt(dx*dx+dy*dy) > DRAG_THRESHOLD){
+        const ti = pendingClusterHitRef.current;
+        pendingClusterHitRef.current = null;
+        repositioningClusterRef.current = ti;
+        setRepositioningCluster(ti);
+        repositioningClusterOrigRef.current = JSON.parse(JSON.stringify(trajRef.current[ti]));
+        draggingClusterRef.current = ti;
+        setDraggingCluster(ti);
+        draggingClusterStartRef.current = {x: ex, y: ey};
+      }
       return;
     }
 
@@ -1007,8 +755,12 @@ export default function App() {
     }
 
     // Cursor hover
-    const hit = findHitFeature(ex, ey);
-    canvas.style.cursor = hit ? "grab" : isAnimating ? "default" : "crosshair";
+    const hitFeature = findHitFeature(ex, ey);
+    const hitCluster = !activeFeatureDrawRef.current ? findHitCluster(ex, ey) : null;
+    canvas.style.cursor = hitFeature ? "grab" 
+      : hitCluster !== null ? "pointer"
+      : isAnimating ? "default" 
+      : "crosshair";
 
     if(!drawing || inputMode !== 'free') return;
     setCurrentPath(p => [...p, c2w(canvas, ex, ey)]);
@@ -1022,6 +774,25 @@ export default function App() {
         currentFeatureStrokesRef.current = [...currentFeatureStrokesRef.current, currentFeatureStrokeRef.current];
       }
       currentFeatureStrokeRef.current = [];
+      return;
+    }
+
+    if(pendingClusterHitRef.current !== null){
+      const ti = pendingClusterHitRef.current;
+      pendingClusterHitRef.current = null;
+      const elapsed = Date.now() - mouseDownTimeRef.current;
+      if(elapsed < CLICK_THRESHOLD){
+        const canvas = canvasRef.current;
+        const traj = trajRef.current[ti];
+        const seg = traj?.segments[0];
+        if(!seg) return;
+        const pt = seg.path[0];
+        const fp = {
+          px: ((pt.x+1)/2) * canvas.width,
+          py: ((1-pt.y)/2) * canvas.height
+        };
+        setClusterMenu({ti, px: fp.px, py: fp.py});
+      }
       return;
     }
 
@@ -1119,16 +890,6 @@ export default function App() {
     setStatus({msg:`Cluster ${trajRef.current.length+1} finished!`,color:"#22c55e"});
   },[currentSegments,currentPath,startTime,endTime,overlapDur,currentColor]);
 
-  const removeFeatureCentroid = useCallback((trajIdx, fcIdx)=>{
-    setTrajectories(prev=>{
-      const updated=[...prev];
-      const traj={...updated[trajIdx]};
-      traj.featureCentroids=(traj.featureCentroids||[]).filter((_,i)=>i!==fcIdx);
-      updated[trajIdx]=traj;
-      return updated;
-    });
-  },[]);
-
   const undo = useCallback(()=>{
     if(currentPath.length>0){setCurrentPath([]);return;}
     if(currentSegments.length>0){setCurrentSegments(p=>p.slice(0,-1));setStatus({msg:"Removed.",color:"#94a3b8"});}
@@ -1156,8 +917,8 @@ export default function App() {
 
   const removeCluster = useCallback((trajIdx) => {
       setTrajectories(prev => prev.filter((_, i) => i !== trajIdx));
-      setSelectedCluster(prev => prev === trajIdx ? null : prev);
       setCopiedClusterIdx(prev => prev === trajIdx ? null : prev);
+      setClusterMenu(null);
       setPrecomp(null);
       setTick(null);
       if(animRef.current) clearTimeout(animRef.current);
@@ -1218,7 +979,7 @@ export default function App() {
       if(animRef.current) clearTimeout(animRef.current);
        setIsAnimating(false);
        finishFeatureSegment();
-    },[]);
+    },[finishFeatureSegment]);
     
   const generate = useCallback(()=>{
     finishFeatureSegment();
@@ -1282,75 +1043,87 @@ export default function App() {
     return ()=>clearTimeout(animRef.current);
   },[isAnimating,precomp]);
 
-  const triggerDownload = useCallback((content, fname, type) => {
-    const blob = new Blob([content], {type});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = fname; a.click();
-    URL.revokeObjectURL(url);
-  }, []);
+  const {
+    downloadCSVComplete,
+    downloadCSV,
+    downloadARFFComplete,
+    downloadARFF,
+    downloadMeta,
+    downloadImage,
+  } = useDownloads({
+    precomp, trajRef, canvasRef,
+    filename, numExtraFeatures, labelMode, trainPct,
+    setStatus,
+  });
 
-  const base = useCallback(() =>
-    filename.endsWith(".csv") ? filename.replace(".csv","") : filename
-  , [filename]);
+  // const triggerDownload = useCallback((content, fname, type) => {
+  //   const blob = new Blob([content], {type});
+  //   const url = URL.createObjectURL(blob);
+  //   const a = document.createElement("a");
+  //   a.href = url; a.download = fname; a.click();
+  //   URL.revokeObjectURL(url);
+  // }, []);
 
-  const downloadCSVComplete = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
-    triggerDownload(csv, `${base()}.csv`, "text/csv");
-    setStatus({msg:`"${base()}.csv" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, triggerDownload, base]);
+  // const base = useCallback(() =>
+  //   filename.endsWith(".csv") ? filename.replace(".csv","") : filename
+  // , [filename]);
 
-  const downloadCSV = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
-    const {train, test} = splitCSV(csv, trainPct);
-    triggerDownload(train, `${base()}_train.csv`, "text/csv");
-    triggerDownload(test,  `${base()}_test.csv`,  "text/csv");
-    setStatus({msg:`"${base()}_train/test.csv" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
+  // const downloadCSVComplete = useCallback(()=>{
+  //   if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  //   const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+  //   triggerDownload(csv, `${base()}.csv`, "text/csv");
+  //   setStatus({msg:`"${base()}.csv" downloaded!`,color:"#22c55e"});
+  // },[precomp, filename, numExtraFeatures, triggerDownload, base]);
 
-  const downloadARFFComplete = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
-    triggerDownload(arff, `${base()}.arff`, "text/plain");
-    setStatus({msg:`"${base()}.arff" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, triggerDownload, base]);
+  // const downloadCSV = useCallback(()=>{
+  //   if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  //   const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+  //   const {train, test} = splitCSV(csv, trainPct);
+  //   triggerDownload(train, `${base()}_train.csv`, "text/csv");
+  //   triggerDownload(test,  `${base()}_test.csv`,  "text/csv");
+  //   setStatus({msg:`"${base()}_train/test.csv" downloaded!`,color:"#22c55e"});
+  // },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
 
-  const downloadARFF = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
-    const {train, test} = splitARFF(arff, trainPct);
-    triggerDownload(train, `${base()}_train.arff`, "text/plain");
-    triggerDownload(test,  `${base()}_test.arff`,  "text/plain");
-    setStatus({msg:`"${base()}_train/test.arff" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
+  // const downloadARFFComplete = useCallback(()=>{
+  //   if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  //   const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+  //   triggerDownload(arff, `${base()}.arff`, "text/plain");
+  //   setStatus({msg:`"${base()}.arff" downloaded!`,color:"#22c55e"});
+  // },[precomp, filename, numExtraFeatures, triggerDownload, base]);
 
-  const downloadMeta = useCallback(()=>{
-    if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
-    const txt = makeMetaTXT( trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct, labelMode, precomp.pointClass );    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
-    const blob = new Blob([txt], {type:"text/plain"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${base}_meta.txt`; a.click();
-    URL.revokeObjectURL(url);
-    setStatus({msg:`"${base}_meta.txt" downloaded!`,color:"#22c55e"});
-  },[precomp, filename, numExtraFeatures, trainPct]);
+  // const downloadARFF = useCallback(()=>{
+  //   if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  //   const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+  //   const {train, test} = splitARFF(arff, trainPct);
+  //   triggerDownload(train, `${base()}_train.arff`, "text/plain");
+  //   triggerDownload(test,  `${base()}_test.arff`,  "text/plain");
+  //   setStatus({msg:`"${base()}_train/test.arff" downloaded!`,color:"#22c55e"});
+  // },[precomp, filename, numExtraFeatures, trainPct, triggerDownload, base]);
 
-  const downloadImage = useCallback(()=>{
-    const canvas=canvasRef.current; if(!canvas) return;
-    const a=document.createElement("a");
-    a.href=canvas.toDataURL("image/png");
-    a.download=(filename.endsWith(".csv")?filename.replace(".csv",""):filename)+".png";
-    a.click(); setStatus({msg:"Saved image!",color:"#22c55e"});
-  },[filename]);
+  // const downloadMeta = useCallback(()=>{
+  //   if(!precomp){setStatus({msg:"Generate a stream first!",color:"#f97316"});return;}
+  //   const txt = makeMetaTXT( trajRef.current, precomp.driftTicks, numExtraFeatures, trainPct, labelMode, precomp.pointClass );    const base = filename.endsWith(".csv") ? filename.replace(".csv","") : filename;
+  //   const blob = new Blob([txt], {type:"text/plain"});
+  //   const url = URL.createObjectURL(blob);
+  //   const a = document.createElement("a");
+  //   a.href = url; a.download = `${base}_meta.txt`; a.click();
+  //   URL.revokeObjectURL(url);
+  //   setStatus({msg:`"${base}_meta.txt" downloaded!`,color:"#22c55e"});
+  // },[precomp, filename, numExtraFeatures, trainPct]);
+
+  // const downloadImage = useCallback(()=>{
+  //   const canvas=canvasRef.current; if(!canvas) return;
+  //   const a=document.createElement("a");
+  //   a.href=canvas.toDataURL("image/png");
+  //   a.download=(filename.endsWith(".csv")?filename.replace(".csv",""):filename)+".png";
+  //   a.click(); setStatus({msg:"Saved image!",color:"#22c55e"});
+  // },[filename]);
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 // ───────────────────────────────────────────────────────────────────────────────────────────── END ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e) => {
-      console.log('key:', e.key, 'ctrl:', e.ctrlKey);
       if(e.ctrlKey || e.metaKey){
         switch(e.key){
           case 'z':
@@ -1511,7 +1284,6 @@ export default function App() {
                     <button onClick={()=>{
                       setSelectedFeatures(new Set());
                       selectedFeaturesRef.current = new Set();
-                      setHoveredFeatureVal(null);
                     }}
                       style={{fontSize:9,fontFamily:"monospace",background:"transparent",
                         border:"none",color:theme.textFaint,cursor:"pointer",padding:0}}>
@@ -1759,30 +1531,9 @@ export default function App() {
                     {copiedClusterIdx === i && (
                       <span style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace"}}>⎘</span>
                     )}
-                    <button
-                      onClick={e=>{ e.stopPropagation(); duplicateCluster(i); }}
-                      title="Duplicate cluster"
-                      style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
-                        borderRadius:4,color:theme.textFaint,cursor:"pointer",
-                        fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
-                      🗐
-                    </button>
-                    <button
-                      onClick={e=>{ e.stopPropagation(); openDensityModal(i); }}
-                      title="Frequency rules"
-                      style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
-                        borderRadius:4,color:t.densityRules?.length>0?"#f5a623":theme.textFaint,
-                        cursor:"pointer",fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
-                      ⛯
-                    </button>
-                    <button
-                      onClick={e=>{ e.stopPropagation(); removeCluster(i); }}
-                      title="Remove cluster"
-                      style={{background:"transparent",border:`1px solid ${theme.cardBorder}`,
-                        borderRadius:4,color:"#f87171",cursor:"pointer",
-                        fontSize:10,padding:"1px 6px",fontFamily:"monospace"}}>
-                      ✕
-                    </button>
+                    {t.densityRules?.length>0&&(
+                      <span style={{fontSize:8,color:"#f5a623",fontFamily:"monospace"}}>⛯</span>
+                    )}
                   </div>
                   {t.segments.map((seg,si)=>(
                     <div key={si} style={{display:"flex",alignItems:"center",gap:4,marginLeft:16,marginTop:3}}>
@@ -1796,11 +1547,6 @@ export default function App() {
                       </span>
                     </div>
                   ))}
-                  {t.densityRules?.length>0&&(
-                    <div style={{marginLeft:16,marginTop:4,fontSize:8,color:"#f5a623",fontFamily:"monospace"}}>
-                      ⚡ {t.densityRules.length} density rule{t.densityRules.length>1?"s":""}
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
@@ -1884,6 +1630,58 @@ export default function App() {
                 pointerEvents:"none",zIndex:10}}>
                 ✏ Drawing independent trajectory for f{drawingFeature.fi+3} · C{drawingFeature.ti}
                 {" — release to finish"}
+              </div>
+            )}
+
+            {/* Cluster Menu */}
+            {clusterMenu !== null && (
+              <div
+                onMouseDown={e=>e.stopPropagation()}
+                style={{
+                  position:"absolute",
+                  left: Math.min(clusterMenu.px + 10, (canvasRef.current?.width || 800) - 160),
+                  top: clusterMenu.py - 20,
+                  background:theme.sidebar,
+                  border:`1px solid ${trajectories[clusterMenu.ti]?.color ?? theme.border}`,
+                  borderRadius:8,padding:"4px",zIndex:50,
+                  display:"flex",flexDirection:"column",gap:3,
+                  boxShadow:"0 4px 16px rgba(0,0,0,0.4)",
+                  minWidth:150
+                }}>
+                <div style={{fontSize:8,color:theme.textFaint,fontFamily:"monospace",
+                  padding:"3px 8px",borderBottom:`1px solid ${theme.border}`,marginBottom:2}}>
+                  C{clusterMenu.ti} · {trajectories[clusterMenu.ti]?.color}
+                </div>
+                {[
+                  {label:"↔ Move", color:theme.textMuted, onClick:()=>{
+                    const ti = clusterMenu.ti;
+                    repositioningClusterRef.current = ti;
+                    setRepositioningCluster(ti);
+                    repositioningClusterOrigRef.current = JSON.parse(JSON.stringify(trajRef.current[ti]));
+                    setClusterMenu(null);
+                  }},
+                  {label:"⎘ Duplicate", color:theme.textMuted, onClick:()=>{
+                    duplicateCluster(clusterMenu.ti);
+                    setClusterMenu(null);
+                  }},
+                  {label:"⛯ Frequency rules", color:trajectories[clusterMenu.ti]?.densityRules?.length>0?"#f5a623":theme.textMuted, onClick:()=>{
+                    openDensityModal(clusterMenu.ti);
+                    setClusterMenu(null);
+                  }},
+                  {label:"✕ Remove", color:"#f87171", onClick:()=>{
+                    removeCluster(clusterMenu.ti);
+                    setClusterMenu(null)
+                  }},
+                ].map(({label, color, onClick})=>(
+                  <button key={label} onClick={onClick}
+                    style={{padding:"5px 12px",borderRadius:5,border:"none",
+                      background:"transparent",color,
+                      fontSize:9,cursor:"pointer",fontFamily:"monospace",textAlign:"left"}}
+                    onMouseEnter={e=>e.currentTarget.style.background=theme.cardBg}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    {label}
+                  </button>
+                ))}
               </div>
             )}
 
