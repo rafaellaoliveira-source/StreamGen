@@ -6,6 +6,7 @@ import { inferDriftType, getDriftTypeColor } from "./utils/driftUtils.js";
 import { CLUSTER_COLORS, FEATURE_COLORS, randomColor, featureColor, makeTheme } from "./theme.js";
 import DensityModal from "./components/DensityModal.jsx";
 import FeatureConfigModal from "./components/FeatureConfigModal.jsx";
+import LabelSpaceModal from "./components/LabelSpaceModal.jsx";
 import { boxMuller, gaussianPoints, rbfPoints } from "./generators/gaussian.js";
 import { getCentroid, getMoorePositions, precomputeData } from "./generators/precompute.js";
 import { makeCSV, splitCSV,shuffleByTick, splitEntries } from "./export/csv.js";
@@ -65,6 +66,13 @@ export default function App() {
   const [endTime,     setEndTime]     = useState(100);
   const [filename,    setFilename]    = useState("stream");
   const [trainPct, setTrainPct] = useState(20);
+
+  // ── Expanded Label Space ─────────────────────────────────────────────
+  const [globalSubLabels, setGlobalSubLabels] = useState(5);
+  const [globalActive, setGlobalActive] = useState(5);
+  const [globalStrategy, setGlobalStrategy] = useState("first");
+  const [labelSpaceModal, setLabelSpaceModal] = useState(null);
+
 
   const [isAnimating, setIsAnimating] = useState(false);
   const [tick,        setTick]        = useState(null);
@@ -1011,9 +1019,8 @@ export default function App() {
     const res = precomputeData(allT, {
       std, pts, distType, labelMode, mlRadius,
       numExtraFeatures, darkCanvas, featureStep,
-      featureTransforms,
-      featureTrajectories,
-      disconnectedFeatures
+      featureTransforms, featureTrajectories, disconnectedFeatures,
+      globalSubLabels, globalActive, globalStrategy
     });
 
     if(!res){setStatus({msg:"Error.",color:"#ef4444"});return;}
@@ -1053,6 +1060,7 @@ export default function App() {
   } = useDownloads({
     precomp, trajRef, canvasRef,
     filename, numExtraFeatures, labelMode, trainPct,
+    globalSubLabels, globalActive, globalStrategy,
     setStatus,
   });
 
@@ -1668,6 +1676,14 @@ export default function App() {
                     openDensityModal(clusterMenu.ti);
                     setClusterMenu(null);
                   }},
+                  ...(labelMode === 'multilabel' ? [{
+                    label:"⊞ Label Frequency",
+                    color: trajectories[clusterMenu.ti]?.labelConfig ? "#4ade80" : theme.textMuted,
+                    onClick:()=>{
+                      setLabelSpaceModal({ti: clusterMenu.ti});
+                      setClusterMenu(null);
+                    }
+                  }] : []),
                   {label:"✕ Remove", color:"#f87171", onClick:()=>{
                     removeCluster(clusterMenu.ti);
                     setClusterMenu(null)
@@ -1803,6 +1819,30 @@ export default function App() {
           onRemoveRule={ri => setEditingRules(prev => prev.filter((_,i) => i !== ri))}
           onClose={()=>setDensityModal(null)}
           onSave={saveDensityRules}
+        />
+      )}
+
+      {/* ── Label Space Modal ── */}
+      {labelSpaceModal !== null && (
+        <LabelSpaceModal
+          ti={labelSpaceModal.ti}
+          traj={trajectories[labelSpaceModal.ti]}
+          theme={theme}
+          globalSubLabels={globalSubLabels}
+          globalActive={globalActive}
+          globalStrategy={globalStrategy}
+          pts={pts}
+          startTime={startTime}
+          endTime={endTime}
+          onClose={()=>setLabelSpaceModal(null)}
+          onSave={(cfg, rules, attrRules)=>{
+            setTrajectories(prev => prev.map((t, i) =>
+              i === labelSpaceModal.ti
+                ? {...t, labelConfig: cfg, labelSpaceRules: rules, attributionRules: attrRules}
+                : t
+            ));
+            setLabelSpaceModal(null);
+          }}
         />
       )}
 

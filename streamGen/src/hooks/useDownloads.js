@@ -20,7 +20,7 @@ import { makeMetaTXT } from "../export/meta.js";
 export function useDownloads({
   precomp, trajRef, canvasRef,
   filename, numExtraFeatures, labelMode, trainPct,
-  setStatus,
+  setStatus, globalSubLabels = 0, globalActive = 0, globalStrategy = "end",
 }) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,8 @@ export function useDownloads({
     if(!precomp){ setStatus({msg:"Generate a stream first!", color:"#f97316"}); return; }
     const txt = makeMetaTXT(
       trajRef.current, precomp.driftTicks,
-      numExtraFeatures, trainPct, labelMode, precomp.pointClass
+      numExtraFeatures, trainPct, labelMode, precomp.pointClass,
+      globalSubLabels, globalActive, globalStrategy
     );
     triggerDownload(txt, `${base()}_meta.txt`, "text/plain");
     setStatus({msg:`"${base()}_meta.txt" downloaded!`, color:"#22c55e"});

@@ -1,5 +1,7 @@
 import { boxMuller, gaussianPoints, rbfPoints } from "./gaussian.js";
 import { getFeatureCentroidAtTick } from "./featureTrajectory.js";
+import { computeStandardLabels, computeSubLabels, computeInstanceColor } from "./labelGenerator.js";
+
 
 export function getCentroid(path, progress) {
   if(path.length===1) return path[0];
@@ -25,7 +27,8 @@ export function getMoorePositions(n) {
   return positions.slice(0, n);
 }
 
-export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms={}, featureTrajectories={}, disconnectedFeatures=new Set()}) {
+export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, numExtraFeatures, darkCanvas, featureStep, featureTransforms={}, featureTrajectories={}, disconnectedFeatures=new Set(), globalSubLabels=5, globalActive=3, globalStrategy="first"
+}) {
   if (!trajs.length) return null;
   const gStart = Math.min(...trajs.map(t => t.startTime));
   const gEnd   = Math.max(...trajs.flatMap(t => t.segments.map(s => s.tEnd)));
@@ -104,6 +107,7 @@ export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, 
     });
 
     const pointsT = [], centroidsT = [];
+    const clusterPtsPerTraj = new Array(trajs.length).fill(pts);
 
     for (let ti = 0; ti < trajs.length; ti++) {
       const ac = allCentroids[ti];
@@ -113,6 +117,7 @@ export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, 
       const densityRules = trajs[ti].densityRules || [];
       const rule = densityRules.find(r => t >= r.tStart && t <= r.tEnd);
       const clusterPts = rule ? rule.pts : pts;
+      clusterPtsPerTraj[ti] = clusterPts;
 
       const genWithExtras = (cx, cy, count, trajIdx) =>
         gen(cx, cy, count).map(pt => {
@@ -146,30 +151,39 @@ export function precomputeData(trajs, {std, pts, distType, labelMode, mlRadius, 
 
     if (!pointsT.length) continue;
 
-    const numTrajs = trajs.length, radius = mlRadius*std;
+    const numTrajs = trajs.length;
+    const radius = mlRadius * std;
     const finalColors = [];
-    const otherCentroids = [];
-    for (let ti=0; ti<trajs.length; ti++) {
-      const ac = allCentroids[ti]; if(!ac) continue;
-      otherCentroids.push({x:ac.main.x, y:ac.main.y, trajIdx:ti});
-      if (ac.secondary) otherCentroids.push({x:ac.secondary.x, y:ac.secondary.y, trajIdx:ti});
+
+    const otherCentroids = labelMode === 'multilabel' ? [] : null;
+    if(labelMode === 'multilabel'){
+      for(let ti=0; ti<trajs.length; ti++){
+        const ac = allCentroids[ti]; if(!ac) continue;
+        otherCentroids.push({x:ac.main.x, y:ac.main.y, trajIdx:ti});
+        if(ac.secondary) otherCentroids.push({x:ac.secondary.x, y:ac.secondary.y, trajIdx:ti});
+      }
     }
 
-    for (let i=0; i<pointsT.length; i++) {
-      const {x:px,y:py,extras,srcTrajIdx} = pointsT[i];
-      const labels = new Array(numTrajs).fill(0);
-      labels[srcTrajIdx] = 1;
-      if (labelMode==='multilabel') {
-        for (const oc of otherCentroids) {
-          if (oc.trajIdx===srcTrajIdx) continue;
-          const dx=px-oc.x, dy=py-oc.y;
-          if (Math.sqrt(dx*dx+dy*dy)<=radius) labels[oc.trajIdx]=1;
-        }
-      }
-      const numLabels = labels.reduce((a,b)=>a+b,0);
-      finalColors.push(numLabels>1 ? MULTILABEL_COLOR : trajs[srcTrajIdx].color);
-      pointClass[gid++] = {x:px, y:py, extras:extras||[], t, labels, srcTrajIdx};
+    const instanceCountPerCluster = new Array(numTrajs).fill(0);
 
+    for (let i=0; i<pointsT.length; i++) {
+      const {x:px, y:py, extras, srcTrajIdx} = pointsT[i];
+      const traj = trajs[srcTrajIdx];
+
+      const labels = computeStandardLabels(
+        srcTrajIdx, numTrajs, labelMode, px, py, otherCentroids, radius
+      );
+
+      const subLabels = computeSubLabels(
+        traj, t, instanceCountPerCluster[srcTrajIdx],
+        globalSubLabels, globalActive, globalStrategy, clusterPtsPerTraj[srcTrajIdx]
+      );
+
+      instanceCountPerCluster[srcTrajIdx]++;
+
+      const color = computeInstanceColor(labels, subLabels, traj.color, MULTILABEL_COLOR);
+      finalColors.push(color);
+      pointClass[gid++] = {x:px, y:py, extras:extras||[], t, labels, srcTrajIdx, subLabels};
     }
 
     dataPerTick[t] = {points:pointsT, colors:finalColors, centroids:centroidsT};

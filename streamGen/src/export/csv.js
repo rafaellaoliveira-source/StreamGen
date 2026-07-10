@@ -23,9 +23,20 @@ export function splitEntries(entries, trainPct) {
 
 export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
-  const labelCols = labelMode === 'multilabel'
-    ? trajs.map((_,i)=>`class_${i}`)
-    : ["label"];
+
+  const labelCols = (() => {
+    if(labelMode === 'multiclass') return ["label"];
+    const cols = [];
+    trajs.forEach((traj, ti) => {
+      if(traj.labelConfig){
+        const n = traj.labelConfig.subLabels;
+        Array.from({length:n}, (_,i) => cols.push(`class_${ti}_${i+1}`));
+      } else {
+        cols.push(`class_${ti}`);
+      }
+    });
+    return cols;
+  })();
 
   const header = [
     "global_id","timestamp","f1","f2",
@@ -33,13 +44,29 @@ export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
     ...labelCols
   ].join(",");
 
-  const toRow = ([id,{x,y,extras,t,labels}]) => {
+  const toRow = ([id,{x,y,extras,t,labels,srcTrajIdx,subLabels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    const labelVals = labelMode === 'multilabel'
-      ? labels
-      : [labels.indexOf(1)];
+
+    const labelVals = (() => {
+      if(labelMode === 'multiclass') return [labels.indexOf(1)];
+      const vals = [];
+      trajs.forEach((traj, ti) => {
+        if(traj.labelConfig){
+          const n = traj.labelConfig.subLabels;
+          if(ti === srcTrajIdx && subLabels){
+            Array.from({length:n}, (_,i) => vals.push(subLabels[i] ?? 0));
+          } else {
+            Array.from({length:n}, () => vals.push(0));
+          }
+        } else {
+          vals.push(labels[ti] ?? 0);
+        }
+      });
+      return vals;
+    })();
+
     return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labelVals].join(",");
   };
 

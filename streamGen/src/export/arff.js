@@ -3,9 +3,22 @@ import { shuffleByTick, splitEntries } from "./csv.js";
 export function makeARFF(pointClass, trajs, numExtraFeatures, labelMode) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
 
-  const labelAttrs = labelMode === 'multilabel'
-    ? trajs.map((_, i) => `@attribute class_${i} {0,1}`)
-    : [`@attribute label {${trajs.map((_,i)=>i).join(",")}}`];
+  const labelAttrs = (() => {
+    if(labelMode === 'multiclass')
+      return [`@attribute label {${trajs.map((_,i)=>i).join(",")}}`];
+    const attrs = [];
+    trajs.forEach((traj, ti) => {
+      if(traj.labelConfig){
+        const n = traj.labelConfig.subLabels;
+        Array.from({length:n}, (_,i) =>
+          attrs.push(`@attribute class_${ti}_${i+1} {0,1}`)
+        );
+      } else {
+        attrs.push(`@attribute class_${ti} {0,1}`);
+      }
+    });
+    return attrs;
+  })();
 
   const header = [
     "@relation stream_gen", "",
@@ -18,13 +31,29 @@ export function makeARFF(pointClass, trajs, numExtraFeatures, labelMode) {
     "", "@data"
   ].join("\n");
 
-  const toRow = ([id,{x,y,extras,t,labels}]) => {
+  const toRow = ([id,{x,y,extras,t,labels,srcTrajIdx,subLabels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
     );
-    const labelVals = labelMode === 'multilabel'
-      ? labels
-      : [labels.indexOf(1)];
+
+    const labelVals = (() => {
+      if(labelMode === 'multiclass') return [labels.indexOf(1)];
+      const vals = [];
+      trajs.forEach((traj, ti) => {
+        if(traj.labelConfig){
+          const n = traj.labelConfig.subLabels;
+          if(ti === srcTrajIdx && subLabels){
+            Array.from({length:n}, (_,i) => vals.push(subLabels[i] ?? 0));
+          } else {
+            Array.from({length:n}, () => vals.push(0));
+          }
+        } else {
+          vals.push(labels[ti] ?? 0);
+        }
+      });
+      return vals;
+    })();
+
     return [id, t, x.toFixed(6), y.toFixed(6), ...ev, ...labelVals].join(",");
   };
 
