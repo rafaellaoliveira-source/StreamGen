@@ -1,3 +1,5 @@
+import { computeOverlapSubLabels } from "../generators/labelGenerator.js";
+
 export function shuffleByTick(pointClass) {
   const byTick = {};
   Object.entries(pointClass).forEach(([id, pt]) => {
@@ -21,9 +23,13 @@ export function splitEntries(entries, trainPct) {
   return { train: entries.slice(0, n), test: entries.slice(n) };
 }
 
-export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
+export function makeCSV(
+  pointClass, trajs, numExtraFeatures, labelMode,
+  globalSubLabels, globalActive, globalStrategy
+) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
 
+  // ── Header columns ────────────────────────────────────────────────
   const labelCols = (() => {
     if(labelMode === 'multiclass') return ["label"];
     const cols = [];
@@ -44,6 +50,7 @@ export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
     ...labelCols
   ].join(",");
 
+  // ── Row builder ───────────────────────────────────────────────────
   const toRow = ([id,{x,y,extras,t,labels,srcTrajIdx,subLabels}]) => {
     const ev = Array.from({length:numExtraFeatures}, (_,i) =>
       (extras&&extras[i]!=null) ? Number(extras[i]).toFixed(6) : "0.000000"
@@ -57,6 +64,11 @@ export function makeCSV(pointClass, trajs, numExtraFeatures, labelMode) {
           const n = traj.labelConfig.subLabels;
           if(ti === srcTrajIdx && subLabels){
             Array.from({length:n}, (_,i) => vals.push(subLabels[i] ?? 0));
+          } else if(labels[ti] === 1){
+            const overlapSubs = computeOverlapSubLabels(
+              traj, t, globalSubLabels, globalActive, globalStrategy
+            );
+            Array.from({length:n}, (_,i) => vals.push(overlapSubs?.[i] ?? 0));
           } else {
             Array.from({length:n}, () => vals.push(0));
           }

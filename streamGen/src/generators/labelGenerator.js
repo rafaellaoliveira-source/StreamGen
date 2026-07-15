@@ -3,7 +3,7 @@
 // Handles both standard multilabel/multiclass and custom label space (XML).
 // No React dependencies.
 
-import { getLabelConfigAtTick, generateSubLabelVector, getAttributionRulesAtTick } from "../utils/labelSpaceUtils.js";
+import { getLabelConfigAtTick, generateSubLabelVector } from "../utils/labelSpaceUtils.js";
 import { getInstancesAtTick, applyAttributionRules } from "../utils/attributionUtils.js";
 
 // ─── Standard label computation ───────────────────────────────────────────────
@@ -70,21 +70,28 @@ export function computeSubLabels(
 
   let subLabels = generateSubLabelVector(nTotal, nActive, strategy);
 
-  const activeAttrRules = getAttributionRulesAtTick(traj, t);
+  const allRules = traj.attributionRules ?? [];
+  if(allRules.length === 0) return subLabels;
 
-  const pastAttrRules = (traj.attributionRules ?? []).filter(r => t > r.tEnd);
+  const activeRules = allRules.filter(r => t >= r.tStart && t <= r.tEnd);
+
+  const pastRules = allRules.filter(r => t > r.tEnd);
+
+  const activeSubLabelIndices = new Set(activeRules.map(r => r.subLabelIndex));
 
   const rulesWithLimits = [
-    ...activeAttrRules.map(r => ({
+    ...activeRules.map(r => ({
       ...r,
-      currentInstances: getInstancesAtTick(r, t),
+      currentInstances: r.instances,
       ptsPerTick,
     })),
-    ...pastAttrRules.map(r => ({
-      ...r,
-      currentInstances: r.finalInstances, 
-      ptsPerTick,
-    })),
+    ...pastRules
+      .filter(r => !activeSubLabelIndices.has(r.subLabelIndex))
+      .map(r => ({
+        ...r,
+        currentInstances: r.instances,
+        ptsPerTick,
+      })),
   ];
 
   if(rulesWithLimits.length > 0){
@@ -92,6 +99,56 @@ export function computeSubLabels(
   }
 
   return subLabels;
+}
+
+// ─── Overlap sub-label computation ───────────────────────────────────────────
+
+/**
+ * Computes the sub-label vector for a neighbor cluster when an instance
+ * is within its overlap radius. Behavior depends on the neighbor's overlapMode.
+ *
+ * - "full"    → all active sub-labels of the neighbor at tick t
+ * - "origin"  → null (no sub-labels from neighbor)
+ * - "partial" → first N active sub-labels of the neighbor at tick t
+ *
+ * Attribution rules are NOT applied here — this instance was not generated
+ * by the neighbor cluster, so it has no instanceIdx within it.
+ *
+ * @param {object} neighborTraj    - Neighbor cluster trajectory object
+ * @param {number} t               - Current tick
+ * @param {number} globalSubLabels - Global default total sub-labels
+ * @param {number} globalActive    - Global default active sub-labels
+ * @param {string} globalStrategy  - Global default strategy
+ * @returns {number[]|null} Sub-label binary vector, or null if origin mode
+ */
+export function computeOverlapSubLabels(
+  neighborTraj, t,
+  globalSubLabels, globalActive, globalStrategy
+) {
+  if(!neighborTraj.labelConfig) return null;
+
+  const overlapMode    = neighborTraj.labelConfig.overlapMode    ?? "full";
+  const overlapPartialN = neighborTraj.labelConfig.overlapPartialN ?? 1;
+
+  if(overlapMode === "origin") return null;
+
+  const { nTotal, nActive, strategy } = getLabelConfigAtTick(
+    neighborTraj, t, globalSubLabels, globalActive, globalStrategy
+  );
+
+  const activeSubLabels = generateSubLabelVector(nTotal, nActive, strategy);
+
+  if(overlapMode === "full") return activeSubLabels;
+
+  const result = new Array(nTotal).fill(0);
+  let count = 0;
+  for(let i = 0; i < nTotal && count < overlapPartialN; i++){
+    if(activeSubLabels[i] === 1){
+      result[i] = 1;
+      count++;
+    }
+  }
+  return result;
 }
 
 // ─── Instance color ───────────────────────────────────────────────────────────

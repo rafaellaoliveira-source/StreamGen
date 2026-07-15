@@ -109,8 +109,8 @@ export default function App() {
   const isMouseDownRef = useRef(false);
   const [draggingCluster, setDraggingCluster] = useState(null);
   const draggingClusterRef = useRef(null);
-  const draggingClusterStartRef = useRef(null); // initial mouse position
-  const draggingClusterOrigRef = useRef(null);  // original trajectory before drag
+  const draggingClusterStartRef = useRef(null); 
+  const draggingClusterOrigRef = useRef(null);  
   const [repositioningCluster, setRepositioningCluster] = useState(null);
   const repositioningClusterRef = useRef(null);
   const repositioningClusterOrigRef = useRef(null);

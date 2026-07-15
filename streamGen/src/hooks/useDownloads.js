@@ -15,12 +15,15 @@ import { makeMetaTXT } from "../export/meta.js";
  * @param {number}  deps.numExtraFeatures  - Number of extra features
  * @param {string}  deps.labelMode         - "multiclass" | "multilabel"
  * @param {number}  deps.trainPct          - Train split percentage (0-100)
+ * @param {number}  deps.globalSubLabels  - Global default total sub-labels
+ * @param {number}  deps.globalActive     - Global default active sub-labels
+ * @param {string}  deps.globalStrategy   - Global default strategy
  * @param {function} deps.setStatus        - Status setter from App state
  */
 export function useDownloads({
   precomp, trajRef, canvasRef,
   filename, numExtraFeatures, labelMode, trainPct,
-  setStatus, globalSubLabels = 0, globalActive = 0, globalStrategy = "end",
+  setStatus, globalSubLabels = 0, globalActive = 0, globalStrategy = "first",
 }) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -40,37 +43,37 @@ export function useDownloads({
 
   const downloadCSVComplete = useCallback(() => {
     if(!precomp){ setStatus({msg:"Generate a stream first!", color:"#f97316"}); return; }
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy);
     triggerDownload(csv, `${base()}.csv`, "text/csv");
     setStatus({msg:`"${base()}.csv" downloaded!`, color:"#22c55e"});
-  }, [precomp, filename, numExtraFeatures, labelMode, triggerDownload, base, setStatus]);
+  }, [precomp, filename, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy, triggerDownload, base, setStatus]);
 
   const downloadCSV = useCallback(() => {
     if(!precomp){ setStatus({msg:"Generate a stream first!", color:"#f97316"}); return; }
-    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+    const csv = makeCSV(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy);
     const { train, test } = splitCSV(csv, trainPct);
     triggerDownload(train, `${base()}_train.csv`, "text/csv");
     triggerDownload(test,  `${base()}_test.csv`,  "text/csv");
     setStatus({msg:`"${base()}_train/test.csv" downloaded!`, color:"#22c55e"});
-  }, [precomp, filename, numExtraFeatures, labelMode, trainPct, triggerDownload, base, setStatus]);
+  }, [precomp, filename, numExtraFeatures, labelMode, trainPct, globalSubLabels, globalActive, globalStrategy, triggerDownload, base, setStatus]);
 
   // ── ARFF ───────────────────────────────────────────────────────────────────
 
   const downloadARFFComplete = useCallback(() => {
     if(!precomp){ setStatus({msg:"Generate a stream first!", color:"#f97316"}); return; }
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy);
     triggerDownload(arff, `${base()}.arff`, "text/plain");
     setStatus({msg:`"${base()}.arff" downloaded!`, color:"#22c55e"});
-  }, [precomp, filename, numExtraFeatures, labelMode, triggerDownload, base, setStatus]);
+  }, [precomp, filename, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy, triggerDownload, base, setStatus]);
 
   const downloadARFF = useCallback(() => {
     if(!precomp){ setStatus({msg:"Generate a stream first!", color:"#f97316"}); return; }
-    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode);
+    const arff = makeARFF(precomp.pointClass, trajRef.current, numExtraFeatures, labelMode, globalSubLabels, globalActive, globalStrategy);
     const { train, test } = splitARFF(arff, trainPct);
     triggerDownload(train, `${base()}_train.arff`, "text/plain");
     triggerDownload(test,  `${base()}_test.arff`,  "text/plain");
     setStatus({msg:`"${base()}_train/test.arff" downloaded!`, color:"#22c55e"});
-  }, [precomp, filename, numExtraFeatures, labelMode, trainPct, triggerDownload, base, setStatus]);
+  }, [precomp, filename, numExtraFeatures, labelMode, trainPct, globalSubLabels, globalActive, globalStrategy, triggerDownload, base, setStatus]);
 
   // ── Meta & Image ───────────────────────────────────────────────────────────
 

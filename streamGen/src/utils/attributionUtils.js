@@ -6,176 +6,139 @@
 // ─── Core calculation ─────────────────────────────────────────────────────────
 
 /**
- * Returns how many instances should receive a specific sub-label at tick t,
- * given an attribution rule.
+ * Returns how many instances should receive a specific sub-label at tick t.
  *
- * The value transitions linearly from `initialInstances` to `finalInstances`
- * at a rate of `changePerTick` per tick, clamped to the valid range.
+ * If changePerTick is null/0 → fixed value throughout the interval.
+ * If changePerTick is set    → linear transition starting from instances.
  *
- * @param {object} rule - Attribution rule
- * @param {number} rule.initialInstances - Attributions at tStart
- * @param {number} rule.finalInstances   - Attributions at tEnd
- * @param {number} rule.changePerTick    - How much the count changes per tick
- * @param {number} rule.tStart           - First tick of the transition
- * @param {number} rule.tEnd             - Last tick of the transition
- * @param {number} t                     - Current tick
- * @returns {number} Number of instances that should receive this sub-label
+ * Outside the interval: returns instances (fixed) or the clamped value (gradual).
+ *
+ * @param {object} rule
+ * @param {number} rule.instances     - Base instance count (fixed or initial value)
+ * @param {number|null} rule.changePerTick - Change per tick (null = fixed)
+ * @param {number} rule.tStart        - First tick of the rule
+ * @param {number} rule.tEnd          - Last tick of the rule
+ * @param {number} rule.ptsPerTick    - Total instances per tick (ceiling)
+ * @param {number} t                  - Current tick
+ * @returns {number}
  */
 export function getInstancesAtTick(rule, t) {
-  const { initialInstances, finalInstances, changePerTick, tStart, tEnd } = rule;
+  const { instances, changePerTick, tStart, tEnd, ptsPerTick } = rule;
 
-  if(t < tStart) return initialInstances;
-  if(t > tEnd)   return finalInstances;
+  // Fixed mode
+  if(!changePerTick) return instances;
+
+  // Gradual mode
+  if(t < tStart) return instances;
 
   const ticksElapsed = t - tStart;
-  const direction = finalInstances >= initialInstances ? 1 : -1;
-  const raw = initialInstances + direction * changePerTick * ticksElapsed;
-
-  // Clamp to [min, max] of initial and final
-  const lo = Math.min(initialInstances, finalInstances);
-  const hi = Math.max(initialInstances, finalInstances);
-  return Math.round(Math.max(lo, Math.min(hi, raw)));
-}
-
-/**
- * Calculates tStart and tEnd for an attribution rule centered on the
- * cluster midpoint, given initial, final and changePerTick values.
- * Mirrors the overlapDur behavior from the main canvas.
- *
- * @param {number} initial       - Starting attribution count
- * @param {number} final         - Ending attribution count
- * @param {number} changePerTick - Change per tick
- * @param {number} midpoint      - Center tick (usually (segStart + segEnd) / 2)
- * @returns {{ tStart: number, tEnd: number, duration: number }}
- */
-export function calcStartEndFromMidpoint(initial, final, changePerTick, midpoint) {
-  const duration = calcTransitionDuration(initial, final, changePerTick);
-  const half = Math.floor(duration / 2);
-  return {
-    tStart: midpoint - half,
-    tEnd:   midpoint - half + duration,
-    duration,
-  };
+  const raw = instances + changePerTick * ticksElapsed;
+  return Math.round(Math.max(0, Math.min(ptsPerTick ?? raw, raw)));
 }
 
 // ─── Transition helpers ───────────────────────────────────────────────────────
 
 /**
- * Calculates how many ticks the transition takes given initial, final
- * and changePerTick values.
+ * Calculates how many ticks until the value reaches 0 or ptsPerTick
+ * given a starting value and changePerTick.
  *
- * @param {number} initial       - Starting attribution count
- * @param {number} final         - Ending attribution count
- * @param {number} changePerTick - Change per tick (must be > 0)
- * @returns {number} Number of ticks needed (minimum 1)
+ * @param {number} instances     - Starting count
+ * @param {number} changePerTick - Change per tick (positive = increasing)
+ * @param {number} ptsPerTick    - Maximum instances per tick
+ * @returns {number}
  */
-export function calcTransitionDuration(initial, final, changePerTick) {
-  if(changePerTick <= 0) return Infinity;
-  const diff = Math.abs(final - initial);
-  if(diff === 0) return 0;
-  return Math.ceil(diff / changePerTick);
+export function calcTransitionDuration(instances, changePerTick, ptsPerTick) {
+  if(!changePerTick || changePerTick === 0) return Infinity;
+  if(changePerTick > 0){
+    return Math.ceil((ptsPerTick - instances) / changePerTick);
+  } else {
+    return Math.ceil(instances / Math.abs(changePerTick));
+  }
 }
 
 /**
- * Calculates changePerTick needed to go from initial to final in exactly
- * `duration` ticks.
+ * Calculates changePerTick needed to go from instances to 0 or ptsPerTick
+ * in exactly `duration` ticks.
  *
- * @param {number} initial  - Starting attribution count
- * @param {number} final    - Ending attribution count
- * @param {number} duration - Number of ticks available
- * @returns {number} Change per tick (rounded to 2 decimal places)
+ * @param {number} instances  - Starting count
+ * @param {number} ptsPerTick - Maximum instances per tick
+ * @param {number} duration   - Number of ticks available
+ * @param {"increase"|"decrease"} direction
+ * @returns {number}
  */
-export function calcChangePerTick(initial, final, duration) {
-  if(duration <= 0) return Math.abs(final - initial);
-  const diff = Math.abs(final - initial);
+export function calcChangePerTick(instances, ptsPerTick, duration, direction) {
+  if(duration <= 0) return 0;
+  const diff = direction === "increase"
+    ? ptsPerTick - instances
+    : instances;
   return Math.round((diff / duration) * 100) / 100;
 }
 
 // ─── Validation & inference ───────────────────────────────────────────────────
 
 /**
- * Infers the drift type based on how fast the transition is relative to
- * the stream duration.
+ * Infers the drift type for a gradual attribution rule.
  *
- * @param {number} initial        - Starting attribution count
- * @param {number} final          - Ending attribution count
  * @param {number} changePerTick  - Change per tick
  * @param {number} streamDuration - Total stream duration in ticks
  * @returns {{ type: string, color: string }}
  */
-export function inferAttributionDriftType(initial, final, changePerTick, streamDuration) {
-  const diff = Math.abs(final - initial);
-  if(diff === 0) return { type: "Stationary", color: "#94a3b8" };
+export function inferAttributionDriftType(changePerTick, streamDuration) {
+  if(!changePerTick) return { type: "Fixed", color: "#94a3b8" };
 
-  const duration = calcTransitionDuration(initial, final, changePerTick);
-
-  if(duration <= 1)
+  const absChange = Math.abs(changePerTick);
+  if(absChange >= 10)
     return { type: "Abrupt", color: "#f87171" };
-  if(duration <= Math.max(2, Math.round(streamDuration * 0.05)))
+  if(absChange >= Math.round(streamDuration * 0.05))
     return { type: "Too fast", color: "#f97316" };
-  return { type: "Gradual", color: "#4ade80" };
+  return { type: "Incremental", color: "#60a5fa" };
 }
 
 /**
- * Validates an attribution rule and returns an array of warning/error messages.
- * Returns an empty array if the rule is valid.
+ * Validates an attribution rule and returns warning messages.
  *
- * @param {object} rule            - Attribution rule to validate
- * @param {number} ptsPerTick      - Global instances per centroid
- * @param {number} streamDuration  - Total stream duration
- * @param {Array}  validIntervals  - [{tStart, tEnd}] from cluster segments
- * @returns {string[]} Array of warning messages (empty if valid)
+ * @param {object} rule
+ * @param {number} ptsPerTick     - Global instances per centroid
+ * @param {Array}  validIntervals - [{tStart, tEnd}] from cluster segments
+ * @returns {string[]}
  */
-export function validateAttributionRule(rule, ptsPerTick, streamDuration, validIntervals) {
+export function validateAttributionRule(rule, ptsPerTick, validIntervals) {
   const warnings = [];
-  const { initialInstances, finalInstances, changePerTick, tStart, tEnd } = rule;
+  const { instances, changePerTick, tStart, tEnd } = rule;
 
-  // Check instances are within valid range
-  if(initialInstances < 0 || initialInstances > ptsPerTick)
-    warnings.push(`Initial must be between 0 and ${ptsPerTick} (instances per tick).`);
-  if(finalInstances < 0 || finalInstances > ptsPerTick)
-    warnings.push(`Final must be between 0 and ${ptsPerTick} (instances per tick).`);
+  // ── Instance range ────────────────────────────────────────────────
+  if(instances < 0 || instances > ptsPerTick)
+    warnings.push(`Instances must be between 0 and ${ptsPerTick}.`);
 
-  // Check tStart/tEnd are within valid cluster intervals
+  // ── Temporal ──────────────────────────────────────────────────────
+  if(tStart >= tEnd)
+    warnings.push("t start must be less than t end.");
   const inValidInterval = validIntervals.some(
     iv => tStart >= iv.tStart && tEnd <= iv.tEnd
   );
   if(!inValidInterval)
     warnings.push(`Range t=${tStart}→${tEnd} must be within cluster segments.`);
 
-  if(tStart >= tEnd)
-    warnings.push("t start must be less than t end.");
-
-  if(changePerTick <= 0)
-    warnings.push("Change per tick must be greater than 0.");
-
-  const diff = Math.abs(finalInstances - initialInstances);
-  const duration = tEnd - tStart;
-  const totalChange = changePerTick * duration;
-
-  if(diff > 0 && totalChange < diff)
-    warnings.push(
-      `Change per tick too small — needs ${Math.ceil(diff / duration)} per tick ` +
-      `to reach final value in ${duration} ticks.`
-    );
-
-  if(diff > 0 && duration <= 1)
-    warnings.push("Transition too short — consider increasing duration for gradual drift.");
+  // ── Transition (only if gradual) ──────────────────────────────────
+  if(changePerTick){
+    if(changePerTick === 0)
+      warnings.push("Change per tick must be non-zero if gradual mode is used.");
+  }
 
   return warnings;
 }
 
 /**
  * Applies attribution rules to a sub-label vector for a specific instance.
+ * Each rule limits how many instances receive its sub-label per tick.
  *
- * - Decreasing rules: sub-label is active for the first N instances
- * - Increasing rules: sub-label is active for the last N instances
+ * Fixed rules:   active for first N instances (instances = N)
+ * Gradual rules: active for first N instances where N changes over time
  *
- * @param {number[]} subLabels    - Binary sub-label vector
- * @param {object[]} activeRules  - Attribution rules active at this tick
- *                                  (each must have currentInstances and ptsPerTick)
- * @param {number}   instanceIdx  - 0-based index of this instance within the tick
- * @returns {number[]} Modified sub-label vector
+ * @param {number[]} subLabels   - Binary sub-label vector
+ * @param {object[]} activeRules - Rules with pre-calculated currentInstances
+ * @param {number}   instanceIdx - 0-based index within the tick
+ * @returns {number[]}
  */
 export function applyAttributionRules(subLabels, activeRules, instanceIdx) {
   if(!activeRules.length) return subLabels;
@@ -184,15 +147,8 @@ export function applyAttributionRules(subLabels, activeRules, instanceIdx) {
     const limit = rule.currentInstances;
     const idx = rule.subLabelIndex - 1;
     if(idx < 0 || idx >= result.length) return;
-
-    const isDecreasing = rule.finalInstances < rule.initialInstances;
-
-    if(isDecreasing){
-      result[idx] = instanceIdx < limit ? result[idx] : 0;
-    } else {
-      const threshold = rule.ptsPerTick - limit;
-      result[idx] = instanceIdx >= threshold ? result[idx] : 0;
-    }
+    // Primeiras N instâncias recebem o sub-label
+    result[idx] = instanceIdx < limit ? result[idx] : 0;
   });
   return result;
 }
@@ -200,8 +156,7 @@ export function applyAttributionRules(subLabels, activeRules, instanceIdx) {
 // ─── Meta summary ─────────────────────────────────────────────────────────────
 
 /**
- * Returns a human-readable summary of all attribution rules for a cluster.
- * Used in META.txt export.
+ * Returns a human-readable summary of attribution rules for META.txt.
  *
  * @param {object} traj - Cluster trajectory object
  * @param {number} ti   - Cluster index
@@ -213,13 +168,13 @@ export function attributionRulesMetaSummary(traj, ti) {
 
   const lines = [`C${ti} attribution rules: ${rules.length}`];
   rules.forEach((r, ri) => {
-    const duration = calcTransitionDuration(r.initialInstances, r.finalInstances, r.changePerTick);
+    const gradual = r.changePerTick
+      ? ` · ${r.changePerTick > 0 ? "+" : ""}${r.changePerTick}/tick`
+      : " · fixed";
     lines.push(
       `  rule ${ri+1}: class_${ti}_${r.subLabelIndex} · ` +
       `t=${r.tStart}→${r.tEnd} · ` +
-      `${r.initialInstances}→${r.finalInstances} inst · ` +
-      `${r.changePerTick}/tick · ` +
-      `duration=${duration} ticks`
+      `${r.instances} inst${gradual}`
     );
   });
   return lines.join("\n");

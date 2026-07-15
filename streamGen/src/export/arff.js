@@ -1,6 +1,10 @@
 import { shuffleByTick, splitEntries } from "./csv.js";
+import { computeOverlapSubLabels } from "../generators/labelGenerator.js";
 
-export function makeARFF(pointClass, trajs, numExtraFeatures, labelMode) {
+export function makeARFF(
+  pointClass, trajs, numExtraFeatures, labelMode,
+  globalSubLabels, globalActive, globalStrategy
+) {
   const extraCols = Array.from({length:numExtraFeatures}, (_,i) => `f${i+3}`);
 
   const labelAttrs = (() => {
@@ -44,6 +48,11 @@ export function makeARFF(pointClass, trajs, numExtraFeatures, labelMode) {
           const n = traj.labelConfig.subLabels;
           if(ti === srcTrajIdx && subLabels){
             Array.from({length:n}, (_,i) => vals.push(subLabels[i] ?? 0));
+          } else if(labels[ti] === 1){
+            const overlapSubs = computeOverlapSubLabels(
+              traj, t, globalSubLabels, globalActive, globalStrategy
+            );
+            Array.from({length:n}, (_,i) => vals.push(overlapSubs?.[i] ?? 0));
           } else {
             Array.from({length:n}, () => vals.push(0));
           }

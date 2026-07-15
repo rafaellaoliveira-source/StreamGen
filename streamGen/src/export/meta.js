@@ -23,6 +23,11 @@ export function makeMetaTXT(
   if(hasCustomLabelSpace){
     lines.push(`Custom label space: enabled (per-cluster configuration)`);
     lines.push(`Global defaults: ${globalSubLabels} sub-labels · ${globalActive} active · strategy=${globalStrategy}`);
+    const overlapModes = trajs
+      .filter(t => t.labelConfig)
+      .map(t => t.labelConfig.overlapMode ?? "full");
+    const uniqueModes = [...new Set(overlapModes)];
+    lines.push(`Overlap mode(s): ${uniqueModes.join(', ')}`);
   }
   lines.push(`Total clusters: ${trajs.length}`);
   lines.push(`Extra features: ${numExtraFeatures} (f3…f${numExtraFeatures+2})`);
@@ -88,6 +93,12 @@ export function makeMetaTXT(
         traj, i, globalSubLabels, globalActive, globalStrategy
       );
       summary.split("\n").forEach(l => lines.push(`  ${l}`));
+
+      const overlapMode     = traj.labelConfig.overlapMode     ?? "full";
+      const overlapPartialN = traj.labelConfig.overlapPartialN ?? 1;
+      lines.push(`  overlap mode     : ${overlapMode}`);
+      if(overlapMode === "partial")
+        lines.push(`  overlap partial N: ${overlapPartialN} sub-labels from neighbor`);
     }
 
     if(traj.attributionRules?.length > 0){
