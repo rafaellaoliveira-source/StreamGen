@@ -304,7 +304,15 @@ export default function LabelSpaceModal({
 
               {localRules.length===0
                 ? <div style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace",marginBottom:12}}>No rules — using base config.</div>
-                : localRules.map((r,ri)=>(
+                : <>
+                <div style={{display:"flex",justifyContent:"flex-end",marginBottom:6}}>
+                  <button onClick={()=>setLocalRules([])}
+                    style={{background:"transparent",border:"none",color:"#f87171",
+                      cursor:"pointer",fontSize:9,fontFamily:"monospace",padding:0}}>
+                    ✕ clear all
+                  </button>
+                </div>
+                {localRules.map((r,ri)=>(
                   <div key={ri} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,
                     padding:"5px 9px",borderRadius:6,border:`1px solid ${theme.cardBorder}`,background:theme.cardBg}}>
                     <span style={{fontSize:10,fontFamily:"monospace",color:theme.textMuted,flex:1}}>
@@ -313,7 +321,8 @@ export default function LabelSpaceModal({
                     <button onClick={()=>setLocalRules(p=>p.filter((_,i)=>i!==ri))}
                       style={{background:"transparent",border:"none",color:"#f87171",cursor:"pointer",fontSize:12,padding:0}}>✕</button>
                   </div>
-                ))
+                ))}
+                </>
               }
 
               <div style={{borderTop:`1px solid ${theme.border}`,paddingTop:12,marginTop:8}}>
@@ -349,7 +358,16 @@ export default function LabelSpaceModal({
 
               {localAttrRules.length===0
                 ? <div style={{fontSize:10,color:theme.textFaint,fontFamily:"monospace",marginBottom:12}}>No rules — using default (all instances).</div>
-                : localAttrRules.map((r,ri)=>(
+                : <>
+                  <div style={{display:"flex",justifyContent:"flex-end",marginBottom:6}}>
+                    <button onClick={()=>setLocalAttrRules([])}
+                      style={{background:"transparent",border:"none",color:"#f87171",
+                        cursor:"pointer",fontSize:9,fontFamily:"monospace",padding:0}}>
+                      ✕ clear all
+                    </button>
+                  </div>
+                
+                {localAttrRules.map((r,ri)=>(
                   <div key={ri} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,
                     padding:"5px 9px",borderRadius:6,border:`1px solid ${theme.cardBorder}`,background:theme.cardBg}}>
                     <span style={{fontSize:10,fontFamily:"monospace",color:theme.textMuted,flex:1}}>
@@ -359,7 +377,7 @@ export default function LabelSpaceModal({
                     <button onClick={()=>setLocalAttrRules(p=>p.filter((_,i)=>i!==ri))}
                       style={{background:"transparent",border:"none",color:"#f87171",cursor:"pointer",fontSize:12,padding:0}}>✕</button>
                   </div>
-                ))
+                ))} </>
               }
 
               {/* Add form */}
